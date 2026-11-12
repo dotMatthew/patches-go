@@ -41,6 +41,11 @@ Ohne Repo-Checkout (sobald das Repo unter diesem Modulpfad veröffentlicht ist):
 go install github.com/dotMatthew/patches-go@latest
 ```
 
+`patches -V` gibt die Version aus dem Git-Tag aus (`v1.2.3` → `patches 1.2.3`); bei
+ungetaggten Commits eine Pseudo-Version, bei lokalen Änderungen mit `+dirty`, ohne
+Git-Informationen `dev`. Mit `-ldflags "-X main.version=1.2.3"` (bzw. `make build VERSION=1.2.3`)
+lässt sie sich explizit setzen.
+
 Für andere Plattformen einfach `GOOS`/`GOARCH` setzen, z. B.
 `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o patches .`
 
@@ -50,6 +55,7 @@ Für andere Plattformen einfach `GOOS`/`GOARCH` setzen, z. B.
 |-------------------|----------------------------------------------------------------|
 | `make build`      | statisches Binary `./patches` für die aktuelle Plattform       |
 | `make dist`       | `dist/patches-{linux,darwin,windows}-{amd64,arm64}`           |
+| `make checksums`  | `dist/` plus `dist/checksums.txt` (SHA-256)                    |
 | `make test`       | `go vet` + Black-Box-Tests (`e2e/`)                            |
 | `make test-arm64` | Tests gegen das linux/arm64-Binary unter qemu in Docker        |
 | `make clean`      | Build-Artefakte löschen                                        |
@@ -61,11 +67,24 @@ Für andere Plattformen einfach `GOOS`/`GOARCH` setzen, z. B.
 Implementierung, z. B. die originale Java-Version:
 
 ```
-PATCHES_CMD="java -jar /pfad/zu/patches.jar" go test -count=1 ./e2e
+PATCHES_CMD="java -jar /pfad/zu/patches.jar" PATCHES_VERSION=1.0.0 go test -count=1 ./e2e
 ```
+
+`PATCHES_VERSION` ist die Version, die `-V` ausgeben muss; ohne die Variable wird nur das
+Format geprüft. Das von den Tests selbst gebaute Binary bekommt die Version `0.0.0-e2e`.
 
 Die Referenzdateien in `e2e/testdata/` stammen aus der Java-Version und können mit
 `UPDATE_GOLDEN=1` neu erzeugt werden.
+
+## Releases
+
+Releases entstehen automatisch mit [semantic-release](https://semantic-release.gitbook.io)
+(`.releaserc.yml`), sobald auf `main` gepusht wird und die Tests grün sind. Aus den
+Conventional Commits seit dem letzten Tag ergibt sich die Version (`fix:` → Patch,
+`feat:` → Minor, `BREAKING CHANGE` → Major); das erste Release ist `v1.0.0`. Es wird der
+Tag `vX.Y.Z` und ein GitHub-Release mit Release-Notes, allen Binaries aus `make dist`
+und `checksums.txt` erstellt. Es wird nichts ins Repo zurück committet, ein zusätzliches
+Token ist nicht nötig. Commits wie `docs:`, `test:`, `ci:` oder `build:` lösen kein Release aus.
 
 ## Bewusste Abweichungen von der Java-Version
 
