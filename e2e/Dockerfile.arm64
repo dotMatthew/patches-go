@@ -1,0 +1,7 @@
+# amd64 image with Go (to run the tests), git (for the fixtures) and
+# qemu user mode emulation (to execute the linux/arm64 patches binary).
+FROM golang:1.26-bookworm
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git qemu-user-static \
+ && rm -rf /var/lib/apt/lists/*
+ENV GOFLAGS=-buildvcs=false GOTOOLCHAIN=local
