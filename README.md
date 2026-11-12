@@ -11,20 +11,27 @@ patches init | apply | clean | create-patch | config | reset | convert-patches
 
 ## Aufbau
 
-| Datei / Paket          | Inhalt                                                        |
-|------------------------|---------------------------------------------------------------|
-| `main.go`, `cli.go`    | Einstieg, Argument-Parser mit picocli-kompatiblen Meldungen   |
-| `commands.go`          | die sieben Kommandos                                          |
-| `config.go`            | `patches.properties` (java.util.Properties-Format)            |
-| `patchfile.go`         | Patch-Datei: Mail-Header (From/Date/Subject), Body, Diff      |
-| `git.go`               | clone, reset (clean + hard reset)                             |
-| `create.go`, `apply.go`| create-patch, apply, convert-patches                          |
-| `log.go`               | Log-Format und Exit-Codes                                     |
-| `e2e/`                 | Black-Box-Tests (laufen auch gegen die Java-Version)          |
-| `internal/diff`        | Histogram-/Myers-Diff und Diff-Format wie JGit (byte-identische Patches) |
-| `internal/patch`       | Patches parsen und anwenden (Hunk-Suche, CRLF) wie JGit       |
+| Datei / Paket           | Inhalt                                                            |
+|-------------------------|-------------------------------------------------------------------|
+| `main.go`               | Einstieg: Signal-Handling (Ctrl+C), Exit-Code                     |
+| `app.go`                | `app` (Verzeichnis, Ein-/Ausgaben, Context), Logging, `cmdError`  |
+| `commands.go`, `usage/` | die sieben Kommandos und ihre Hilfetexte (per `go:embed`)         |
+| `config.go`             | `patches.properties` (java.util.Properties-Format)                |
+| `patchfile.go`          | Patch-Datei: Mail-Header (From/Date/Subject), Body, Diff          |
+| `git.go`                | clone, reset (clean + hard reset)                                 |
+| `create.go`, `apply.go` | create-patch, apply, convert-patches                              |
+| `version.go`            | Versionsermittlung                                                |
+| `internal/cli`          | Argument-Parser mit picocli-kompatiblen Meldungen                 |
+| `internal/diff`         | Histogram-/Myers-Diff und Diff-Format wie JGit (byte-identische Patches) |
+| `internal/patch`        | Patches parsen und anwenden (Hunk-Suche, CRLF) wie JGit           |
+| `e2e/`                  | Black-Box-Tests (laufen auch gegen die Java-Version)              |
 
-Git-Zugriffe laufen über go-git. Reines Go ohne cgo – die Binaries sind statisch und laufen auf amd64 und arm64.
+Kommandos geben einen `error` zurück; ein `cmdError` bestimmt Exit-Code und Log-Meldung,
+ausgegeben wird an genau einer Stelle (`app.report`). Alle Pfade sind relativ zu `app.dir`,
+dadurch lassen sich die Kommandos auch im Prozess testen.
+
+Git-Zugriffe laufen über go-git. Reines Go ohne cgo – die Binaries sind statisch und laufen
+auf amd64 und arm64.
 
 ## Installation
 
@@ -56,14 +63,17 @@ Für andere Plattformen einfach `GOOS`/`GOARCH` setzen, z. B.
 | `make build`      | statisches Binary `./patches` für die aktuelle Plattform       |
 | `make dist`       | `dist/patches-{linux,darwin,windows}-{amd64,arm64}`           |
 | `make checksums`  | `dist/` plus `dist/checksums.txt` (SHA-256)                    |
-| `make test`       | `go vet` + Black-Box-Tests (`e2e/`)                            |
+| `make test`       | `go vet`, Unit- und Black-Box-Tests (`e2e/`)                   |
+| `make fuzz`       | Fuzzing von Diff und Diff→Apply-Roundtrip (`FUZZTIME=1m`)      |
+| `make lint`       | `golangci-lint run` (Konfiguration in `.golangci.yml`)         |
 | `make test-arm64` | Tests gegen das linux/arm64-Binary unter qemu in Docker        |
 | `make clean`      | Build-Artefakte löschen                                        |
 
 ## Tests
 
-`go test ./...` baut das Binary selbst und führt die Black-Box-Tests in `e2e/` aus
-(benötigt `git` im `PATH`). Dieselben Tests laufen auch gegen jede andere
+`go test ./...` führt die Unit-Tests und die Black-Box-Tests in `e2e/` aus; für letztere
+wird das Binary automatisch gebaut (benötigt `git` im `PATH`). Die Fuzz-Tests prüfen, dass
+ein erzeugter Diff angewendet immer exakt den Zieltext ergibt (`make fuzz`). Dieselben Tests laufen auch gegen jede andere
 Implementierung, z. B. die originale Java-Version:
 
 ```
