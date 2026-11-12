@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-billy/v5/osfs"
@@ -18,51 +19,51 @@ import (
 	"github.com/go-git/go-git/v5/storage/memory"
 )
 
-func cloneRepo(c *config) int {
-	logGit.info("Start to download the repository")
-	if fi, err := os.Stat(workdir); err == nil {
-		if entries, _ := os.ReadDir(workdir); !fi.IsDir() || len(entries) > 0 {
-			return crash(fmt.Sprintf("Destination path %q already exists and is not an empty directory", workdir))
+// cloneRepo clones the base repository into the work directory.
+func (a *app) cloneRepo(c *config) error {
+	a.info(logGit, "Start to download the repository")
+	if fi, err := os.Stat(a.workdir()); err == nil {
+		if entries, _ := os.ReadDir(a.workdir()); !fi.IsDir() || len(entries) > 0 {
+			return crash("destination path %q already exists and is not an empty directory", "_workdir")
 		}
 	}
-	if err := clone(c.URL, c.Ref); err != nil {
-		logGit.fail(err, "An error occurred at downloading the repository")
-		return exitInternal
+	if err := a.clone(c.URL, c.Ref); err != nil {
+		return failure(exitInternal, logGit, err, "An error occurred at downloading the repository")
 	}
-	logGit.info("Successfully downloaded the repository")
-	return exitOK
+	a.info(logGit, "Successfully downloaded the repository")
+	return nil
 }
 
-// clone clones url into the work directory and checks out ref, which may be
-// a full ref name, a branch or a tag (tags are checked out detached).
-func clone(url, ref string) error {
+// clone clones url and checks out ref, which may be a full ref name, a
+// branch or a tag (tags are checked out detached).
+func (a *app) clone(url, ref string) error {
 	remote := git.NewRemote(memory.NewStorage(), &gitconfig.RemoteConfig{Name: "origin", URLs: []string{url}})
-	refs, err := remote.List(&git.ListOptions{})
+	refs, err := remote.ListContext(a.ctx, &git.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("Invalid remote: origin: %w", err)
+		return fmt.Errorf("invalid remote origin: %w", err)
 	}
 	opts := &git.CloneOptions{URL: url, Tags: git.AllTags}
 	if ref != "HEAD" {
 		for _, name := range []string{ref, "refs/heads/" + ref, "refs/tags/" + ref} {
-			for _, r := range refs {
-				if opts.ReferenceName == "" && r.Name().String() == name {
-					opts.ReferenceName = r.Name()
-				}
+			if slices.ContainsFunc(refs, func(r *plumbing.Reference) bool { return r.Name().String() == name }) {
+				opts.ReferenceName = plumbing.ReferenceName(name)
+				break
 			}
 		}
 		if opts.ReferenceName == "" {
-			return fmt.Errorf("Remote branch '%s' not found in upstream origin", ref)
+			return fmt.Errorf("remote branch %q not found in upstream origin", ref)
 		}
 	}
-	existed := exists(workdir)
-	if _, err = git.PlainClone(workdir, false, opts); err != nil && !existed {
-		os.RemoveAll(workdir)
+	existed := exists(a.workdir())
+	_, err = git.PlainCloneContext(a.ctx, a.workdir(), false, opts)
+	if err != nil && !existed {
+		_ = os.RemoveAll(a.workdir()) // best effort cleanup of a partial clone
 	}
 	return err
 }
 
-func openWorktree() (*git.Repository, *git.Worktree, error) {
-	repo, err := git.PlainOpen(workdir)
+func (a *app) openWorktree() (*git.Repository, *git.Worktree, error) {
+	repo, err := git.PlainOpen(a.workdir())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -72,51 +73,50 @@ func openWorktree() (*git.Repository, *git.Worktree, error) {
 
 func isClean(wt *git.Worktree) (bool, error) {
 	st, err := wt.Status()
-	return err == nil && st.IsClean(), err
+	if err != nil {
+		return false, err
+	}
+	return st.IsClean(), nil
 }
 
-func resetRepo(c *config) int {
-	if !exists(workdir) {
-		logGit.error("No git directory found to reset!")
-		return exitUsage
+// resetRepo cleans the work directory, fetches and resets it to the base ref.
+func (a *app) resetRepo(c *config) error {
+	if !exists(a.workdir()) {
+		return failure(exitUsage, logGit, nil, "No git directory found to reset!")
 	}
-	code, err := reset(c.Ref)
+	repo, wt, err := a.openWorktree()
 	if err != nil {
-		logGit.fail(err, "An error occurred at resetting repository")
-		return exitInternal
+		return failure(exitInternal, logGit, err, "An error occurred at resetting repository")
 	}
-	return code
+	target, err := a.fetchAndResolve(repo, wt, c.Ref)
+	if err != nil {
+		return failure(exitInternal, logGit, err, "An error occurred at resetting repository")
+	}
+	if target == nil {
+		return failure(exitInternal, logGit, nil, "Could not found commit id for base ref")
+	}
+	if err := a.hardReset(repo, wt, *target); err != nil {
+		return failure(exitInternal, logGit, err, "An error occurred at resetting repository")
+	}
+	a.info(logGit, "Successfully reset the repository")
+	return nil
 }
 
-func reset(ref string) (int, error) {
-	repo, wt, err := openWorktree()
-	if err != nil {
-		return 0, err
+// fetchAndResolve cleans the work directory, fetches all branches and tags
+// and resolves ref (nil if it does not exist).
+func (a *app) fetchAndResolve(repo *git.Repository, wt *git.Worktree, ref string) (*plumbing.Hash, error) {
+	if err := a.cleanWorktree(repo, wt); err != nil {
+		return nil, err
 	}
-	if err := cleanWorktree(repo, wt); err != nil {
-		return 0, err
-	}
-	err = repo.Fetch(&git.FetchOptions{
+	err := repo.FetchContext(a.ctx, &git.FetchOptions{
 		RemoteName: "origin",
 		RefSpecs:   []gitconfig.RefSpec{"+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*"},
 		Tags:       git.AllTags,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return 0, err
+		return nil, err
 	}
-	target, err := resolveCommit(repo, ref)
-	if err != nil {
-		return 0, err
-	}
-	if target == nil {
-		logGit.error("Could not found commit id for base ref")
-		return exitInternal, nil
-	}
-	if err := hardReset(repo, wt, *target); err != nil {
-		return 0, err
-	}
-	logGit.info("Successfully reset the repository")
-	return exitOK, nil
+	return resolveCommit(repo, ref)
 }
 
 // resolveCommit resolves a full sha, a ref name, a remote branch, a tag or a
@@ -159,30 +159,25 @@ func peel(repo *git.Repository, h plumbing.Hash) (*plumbing.Hash, error) {
 
 // cleanWorktree deletes untracked files and every non-ignored directory
 // without tracked files (with all its content). Ignored files are kept.
-func cleanWorktree(repo *git.Repository, wt *git.Worktree) error {
+func (a *app) cleanWorktree(repo *git.Repository, wt *git.Worktree) error {
 	idx, err := repo.Storer.Index()
 	if err != nil {
 		return err
 	}
-	tracked := map[string]bool{"": true}
+	tracked := map[string]bool{"": true} // tracked files and their parent directories
 	for _, e := range idx.Entries {
 		for p := e.Name; p != "."; p = path.Dir(p) {
 			tracked[p] = true
 		}
 	}
-	patterns, _ := gitignore.ReadPatterns(wt.Filesystem, nil)
-	root := osfs.New("/")
-	if global, err := gitignore.LoadGlobalPatterns(root); err == nil {
-		patterns = append(global, patterns...)
+	ignored, err := ignoreMatcher(wt)
+	if err != nil {
+		return err
 	}
-	if system, err := gitignore.LoadSystemPatterns(root); err == nil {
-		patterns = append(system, patterns...)
-	}
-	ignored := gitignore.NewMatcher(patterns)
 
 	var walk func(dir string) error
 	walk = func(dir string) error {
-		entries, err := os.ReadDir(filepath.Join(workdir, dir))
+		entries, err := os.ReadDir(filepath.Join(a.workdir(), dir))
 		if err != nil {
 			return err
 		}
@@ -191,11 +186,10 @@ func cleanWorktree(repo *git.Repository, wt *git.Worktree) error {
 			if p == ".git" || ignored.Match(strings.Split(p, "/"), e.IsDir()) || (tracked[p] && !e.IsDir()) {
 				continue
 			}
-			abs := filepath.Join(workdir, filepath.FromSlash(p))
 			if e.IsDir() && tracked[p] {
 				err = walk(p)
 			} else {
-				err = os.RemoveAll(abs)
+				err = os.RemoveAll(filepath.Join(a.workdir(), filepath.FromSlash(p)))
 			}
 			if err != nil {
 				return err
@@ -206,10 +200,27 @@ func cleanWorktree(repo *git.Repository, wt *git.Worktree) error {
 	return walk("")
 }
 
+// ignoreMatcher combines the system, global and repository ignore rules.
+func ignoreMatcher(wt *git.Worktree) (gitignore.Matcher, error) {
+	patterns, err := gitignore.ReadPatterns(wt.Filesystem, nil)
+	if err != nil {
+		return nil, err
+	}
+	root := osfs.New("/")
+	// A missing or unreadable global/system config simply means no rules.
+	if global, err := gitignore.LoadGlobalPatterns(root); err == nil {
+		patterns = append(global, patterns...)
+	}
+	if system, err := gitignore.LoadSystemPatterns(root); err == nil {
+		patterns = append(system, patterns...)
+	}
+	return gitignore.NewMatcher(patterns), nil
+}
+
 // hardReset moves HEAD (or the current branch) to target, resets the index
 // and checks out all tracked files. Unlike go-git's HardReset it keeps
 // untracked and ignored files.
-func hardReset(repo *git.Repository, wt *git.Worktree, target plumbing.Hash) error {
+func (a *app) hardReset(repo *git.Repository, wt *git.Worktree, target plumbing.Hash) error {
 	idx, err := repo.Storer.Index()
 	if err != nil {
 		return err
@@ -234,12 +245,13 @@ func hardReset(repo *git.Repository, wt *git.Worktree, target plumbing.Hash) err
 		return err
 	}
 	for p, s := range status {
-		abs := filepath.Join(workdir, filepath.FromSlash(p))
+		abs := filepath.Join(a.workdir(), filepath.FromSlash(p))
 		switch {
 		case s.Worktree == git.Untracked && trackedBefore[p]: // not part of target
-			os.Remove(abs)
-			for dir := filepath.Dir(abs); dir != workdir && os.Remove(dir) == nil; dir = filepath.Dir(dir) {
+			if err := os.Remove(abs); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
 			}
+			a.removeEmptyParents(filepath.Dir(abs))
 		case s.Worktree == git.Modified || s.Worktree == git.Deleted:
 			if err := checkout(tree, p, abs); err != nil {
 				return err
@@ -249,6 +261,17 @@ func hardReset(repo *git.Repository, wt *git.Worktree, target plumbing.Hash) err
 	return nil
 }
 
+// removeEmptyParents removes dir and its parents up to the work directory as
+// long as they are empty.
+func (a *app) removeEmptyParents(dir string) {
+	for ; dir != a.workdir() && strings.HasPrefix(dir, a.workdir()); dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil { // not empty (or already gone): stop
+			return
+		}
+	}
+}
+
+// checkout writes the file p of tree to abs.
 func checkout(tree *object.Tree, p, abs string) error {
 	entry, err := tree.FindEntry(p)
 	if err != nil {
@@ -276,6 +299,7 @@ func checkout(tree *object.Tree, p, abs string) error {
 		return os.Symlink(content, abs)
 	case filemode.Executable:
 		return os.WriteFile(abs, []byte(content), 0o777)
+	default:
+		return os.WriteFile(abs, []byte(content), 0o666)
 	}
-	return os.WriteFile(abs, []byte(content), 0o666)
 }

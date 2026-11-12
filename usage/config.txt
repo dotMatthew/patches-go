@@ -1,0 +1,11 @@
+Usage: patches config [-BRF=<baseRepoRef>] [-BRU=<baseRepoUrl>]
+                      [-F=<configFile>] [-PDP=<patchesDirectoryPath>]
+Changes a value in the current patches config file
+      -BRF, --base-repo-ref=<baseRepoRef>
+         Set the default repository ref
+      -BRU, --base-repo-url=<baseRepoUrl>
+         Set the base repository url
+  -F, --config=<configFile>
+         Path to patches config file. Defaults to patches.properties
+      -PDP, --patches-directory-path=<patchesDirectoryPath>
+         Set the path to the patches directory

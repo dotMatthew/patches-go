@@ -3,8 +3,16 @@
 // command line interface and output.
 package main
 
-import "os"
+import (
+	"context"
+	"os"
+	"os/signal"
+)
 
 func main() {
-	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	a := &app{ctx: ctx, dir: ".", stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
+	code := a.run(os.Args[1:])
+	stop()
+	os.Exit(code)
 }

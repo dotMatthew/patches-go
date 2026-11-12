@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -13,7 +14,6 @@ import (
 const (
 	defaultConfigFile = "patches.properties"
 	exampleURL        = "no://op"
-	workdir           = "_workdir"
 )
 
 // config is the content of patches.properties.
@@ -26,20 +26,19 @@ func exists(path string) bool {
 	return path != "" && err == nil
 }
 
-// loadConfig reads the config file; nil means invalid (the reason is logged).
-func loadConfig(file string) *config {
+// loadConfig reads the config file. The error describes why it is invalid
+// (callers report it and decide how to go on).
+func loadConfig(file string) (*config, error) {
 	data, err := os.ReadFile(file)
 	var p map[string]string
 	if err == nil {
 		p, err = parseProperties(data)
 	}
 	if err != nil {
-		logProps.fail(err, "Failed to load patches configuration")
-		return nil
+		return nil, failure(exitCrash, logProps, err, "Failed to load patches configuration")
 	}
 	if len(p) == 0 {
-		logProps.error("Could not load properties file")
-		return nil
+		return nil, failure(exitCrash, logProps, nil, "Could not load properties file")
 	}
 	url, okURL := p["baseRepoUrl"]
 	ref, okRef := p["baseRepoRef"]
@@ -48,10 +47,9 @@ func loadConfig(file string) *config {
 		dir = "patches"
 	}
 	if !okURL || !okRef {
-		logProps.info("Keys cannot be loaded from properties file!")
-		return nil
+		return nil, &cmdError{code: exitCrash, logger: logProps, level: "INFO", msg: "Keys cannot be loaded from properties file!"}
 	}
-	return &config{URL: url, Ref: ref, PatchesDir: dir}
+	return &config{URL: url, Ref: ref, PatchesDir: dir}, nil
 }
 
 // save writes the config in java.util.Properties format.
@@ -175,11 +173,11 @@ func unescapeProperty(in []uint16) (string, error) {
 		switch c := in[i]; c {
 		case 'u':
 			if i+5 > len(in) {
-				return "", fmt.Errorf("Malformed \\uxxxx encoding.")
+				return "", errors.New("malformed \\uxxxx encoding")
 			}
 			v, err := strconv.ParseUint(string(utf16.Decode(in[i+1:i+5])), 16, 16)
 			if err != nil {
-				return "", fmt.Errorf("Malformed \\uxxxx encoding.")
+				return "", errors.New("malformed \\uxxxx encoding")
 			}
 			out = append(out, uint16(v))
 			i += 4

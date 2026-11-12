@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
@@ -21,42 +22,43 @@ import (
 	"github.com/dotMatthew/patches-go/internal/diff"
 )
 
-func createPatch(c *config, name string) int {
-	logGit.info("Starting to create a patch")
-	repo, wt, err := openWorktree()
+// createPatch writes the HEAD commit of the work directory as patch file.
+func (a *app) createPatch(c *config, name string) error {
+	a.info(logGit, "Starting to create a patch")
+	repo, wt, err := a.openWorktree()
 	var clean bool
 	if err == nil {
 		clean, err = isClean(wt)
 	}
 	if err != nil {
-		logGit.fail(err, "An error occurred at creating this patch")
-		return exitInternal
+		return failure(exitInternal, logGit, err, "An error occurred at creating this patch")
 	}
 	if !clean {
-		logGit.error("Your repository is not in a clean state. Cannot create a patch from an unclean state")
-		return exitUsage
+		return failure(exitUsage, logGit, nil, "Your repository is not in a clean state. Cannot create a patch from an unclean state")
 	}
 	head, err := commitOf(repo, "HEAD")
 	if err != nil {
-		return crash(err.Error())
+		return crash("%v", err)
 	}
 	parent, err := commitOf(repo, "HEAD~1")
 	if err != nil {
-		return crash(err.Error())
+		return crash("%v", err)
 	}
-	diffText, err := formatDiff(repo, parent, head)
+	diffText, err := a.formatDiff(repo, parent, head)
 	if err != nil {
-		logGit.fail(err, "An error occurred at creating this patch")
-		return exitInternal
+		return failure(exitInternal, logGit, err, "An error occurred at creating this patch")
 	}
 	subject, body, ok := strings.Cut(head.Message, "\n")
 	if !ok || strings.TrimSpace(head.Message) == "" {
 		return crash("commit message has no subject line")
 	}
-	// Like the Java version a write error is only logged.
-	writePatch(c.PatchesDir+"/"+name+".patch", diffText, subject, body, head.Author.Name, head.Author.Email, head.Author.When)
-	logGit.info("Patch successfully created and saved to disk! (%s.patch)", name)
-	return exitOK
+	file := filepath.Join(a.path(c.PatchesDir), name+".patch")
+	// Like in the Java version a failed write is only logged.
+	if err := writePatch(file, diffText, subject, body, head.Author.Name, head.Author.Email, head.Author.When); err != nil {
+		a.report(err)
+	}
+	a.info(logGit, "Patch successfully created and saved to disk! (%s.patch)", name)
+	return nil
 }
 
 func commitOf(repo *git.Repository, rev string) (*object.Commit, error) {
@@ -68,7 +70,7 @@ func commitOf(repo *git.Repository, rev string) (*object.Commit, error) {
 }
 
 // formatDiff renders the changes between two commits like JGit's DiffFormatter.
-func formatDiff(repo *git.Repository, from, to *object.Commit) (string, error) {
+func (a *app) formatDiff(repo *git.Repository, from, to *object.Commit) (string, error) {
 	entries, err := diffEntries(from, to)
 	if err != nil {
 		return "", err
@@ -95,7 +97,7 @@ func formatDiff(repo *git.Repository, from, to *object.Commit) (string, error) {
 		defer r.Close()
 		return io.ReadAll(r)
 	}
-	f.Abbreviate = abbreviator(filepath.Join(workdir, ".git", "objects"))
+	f.Abbreviate = abbreviator(filepath.Join(a.workdir(), ".git", "objects"))
 	var out bytes.Buffer
 	for _, e := range entries {
 		if err := f.Format(&out, e); err != nil {
@@ -105,14 +107,16 @@ func formatDiff(repo *git.Repository, from, to *object.Commit) (string, error) {
 	return toValidUTF8(out.Bytes()), nil
 }
 
+// isTrue parses a git config boolean.
 func isTrue(v string, def bool) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "true", "yes", "on", "1":
 		return true
 	case "false", "no", "off", "0":
 		return false
+	default:
+		return def
 	}
-	return def
 }
 
 type treeFile struct {
@@ -120,6 +124,7 @@ type treeFile struct {
 	id   string
 }
 
+// treeFiles lists all files (including submodules) of a commit.
 func treeFiles(c *object.Commit) (map[string]treeFile, error) {
 	tree, err := c.Tree()
 	if err != nil {
@@ -151,7 +156,7 @@ func diffEntries(from, to *object.Commit) ([]*diff.Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	var paths []string
+	paths := make([]string, 0, len(a)+len(b))
 	for p := range a {
 		paths = append(paths, p)
 	}
@@ -160,7 +165,8 @@ func diffEntries(from, to *object.Commit) ([]*diff.Entry, error) {
 			paths = append(paths, p)
 		}
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
+
 	deleted := func(p string, o treeFile) *diff.Entry {
 		return &diff.Entry{Type: diff.Delete, OldPath: p, NewPath: "/dev/null", OldMode: o.mode, OldID: o.id, NewID: diff.ZeroID}
 	}
@@ -177,6 +183,7 @@ func diffEntries(from, to *object.Commit) ([]*diff.Entry, error) {
 		case !inA:
 			entries = append(entries, added(p, n))
 		case o == n:
+			// unchanged
 		case diff.SameType(o.mode, n.mode):
 			entries = append(entries, &diff.Entry{Type: diff.Modify, OldPath: p, NewPath: p, OldMode: o.mode, NewMode: n.mode, OldID: o.id, NewID: n.id})
 		default: // a type change (e.g. file -> symlink) is a delete plus an add
@@ -186,52 +193,65 @@ func diffEntries(from, to *object.Commit) ([]*diff.Entry, error) {
 	return entries, nil
 }
 
-// abbreviator returns the shortest unique abbreviation (at least 7 chars)
-// of an object id among all objects of the repository.
+// abbreviator returns a function that abbreviates object ids like git: at
+// least 7 characters, longer if the prefix is ambiguous in the repository.
+// The object ids are loaded on first use.
 func abbreviator(objectsDir string) func(string) string {
 	var ids []string
 	loaded := false
-	load := func() {
-		loaded = true
-		loose, _ := filepath.Glob(filepath.Join(objectsDir, "[0-9a-f][0-9a-f]", "*"))
-		for _, p := range loose {
-			ids = append(ids, filepath.Base(filepath.Dir(p))+filepath.Base(p))
-		}
-		packs, _ := filepath.Glob(filepath.Join(objectsDir, "pack", "*.idx"))
-		for _, p := range packs {
-			f, err := os.Open(p)
-			if err != nil {
-				continue
-			}
-			idx := idxfile.NewMemoryIndex()
-			if idxfile.NewDecoder(f).Decode(idx) == nil {
-				if it, err := idx.Entries(); err == nil {
-					for e, err := it.Next(); err == nil; e, err = it.Next() {
-						ids = append(ids, hex.EncodeToString(e.Hash[:]))
-					}
-				}
-			}
-			f.Close()
-		}
-		sort.Strings(ids)
-	}
-	ambiguous := func(prefix string) bool {
-		i := sort.SearchStrings(ids, prefix)
-		for j := i + 1; j < len(ids) && strings.HasPrefix(ids[j], prefix); j++ {
-			if ids[j] != ids[i] {
-				return true
-			}
-		}
-		return false
-	}
 	return func(id string) string {
 		if !loaded {
-			load()
+			ids, loaded = objectIDs(objectsDir), true
 		}
 		l := 7
-		for l < len(id) && ambiguous(id[:l]) {
+		for l < len(id) && ambiguous(ids, id[:l]) {
 			l++
 		}
 		return id[:l]
 	}
+}
+
+// ambiguous reports whether more than one id in the sorted list has prefix.
+func ambiguous(ids []string, prefix string) bool {
+	i, _ := slices.BinarySearch(ids, prefix)
+	return i+1 < len(ids) && strings.HasPrefix(ids[i], prefix) && strings.HasPrefix(ids[i+1], prefix)
+}
+
+// objectIDs returns the sorted, unique ids of all loose and packed objects.
+func objectIDs(objectsDir string) []string {
+	var ids []string
+	loose, _ := filepath.Glob(filepath.Join(objectsDir, "[0-9a-f][0-9a-f]", "*"))
+	for _, p := range loose {
+		ids = append(ids, filepath.Base(filepath.Dir(p))+filepath.Base(p))
+	}
+	packs, _ := filepath.Glob(filepath.Join(objectsDir, "pack", "*.idx"))
+	for _, p := range packs {
+		ids = append(ids, packedIDs(p)...)
+	}
+	slices.SortFunc(ids, cmp.Compare)
+	return slices.Compact(ids)
+}
+
+// packedIDs reads the object ids of a pack index; unreadable indexes are
+// skipped (the abbreviation is then just possibly too short).
+func packedIDs(idxPath string) []string {
+	f, err := os.Open(idxPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	idx := idxfile.NewMemoryIndex()
+	if idxfile.NewDecoder(f).Decode(idx) != nil {
+		return nil
+	}
+	it, err := idx.Entries()
+	if err != nil {
+		return nil
+	}
+	defer it.Close()
+	var ids []string
+	for e, err := it.Next(); err == nil; e, err = it.Next() {
+		ids = append(ids, hex.EncodeToString(e.Hash[:]))
+	}
+	return ids
 }

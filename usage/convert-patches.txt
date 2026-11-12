@@ -1,0 +1,4 @@
+Usage: patches convert-patches [-F=<configFile>]
+Convert our patch format to git patches
+  -F, --config=<configFile>
+         Path to patches config file. Defaults to patches.properties

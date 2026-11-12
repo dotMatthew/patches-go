@@ -2,222 +2,249 @@ package main
 
 import (
 	"bufio"
+	"embed"
 	"errors"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/dotMatthew/patches-go/internal/cli"
+)
+
+//go:embed usage
+var usageFiles embed.FS
+
+func usage(name string) string {
+	b, err := usageFiles.ReadFile("usage/" + name + ".txt")
+	if err != nil {
+		panic(err) // the files are embedded at compile time
+	}
+	return string(b)
+}
+
+const (
+	optConfig = "--config"
+	optURL    = "--repo-url"
+	optBRU    = "--base-repo-url"
+	optBRF    = "--base-repo-ref"
+	optPDP    = "--patches-directory-path"
 )
 
 var (
-	optConfig = option{"-F", "--config", "<configFile>"}
-	optURL    = option{"-U", "--repo-url", "<url>"}
-	optBRU    = option{"-BRU", "--base-repo-url", "<baseRepoUrl>"}
-	optBRF    = option{"-BRF", "--base-repo-ref", "<baseRepoRef>"}
-	optPDP    = option{"-PDP", "--patches-directory-path", "<patchesDirectoryPath>"}
+	configOption = cli.Option{Short: "-F", Long: optConfig, Param: "<configFile>"}
+	urlOption    = cli.Option{Short: "-U", Long: optURL, Param: "<url>"}
 )
 
-const (
-	configHelp = "  -F, --config=<configFile>\n         Path to patches config file. Defaults to patches.properties\n"
-	configWide = "  -F, --config=<configFile>\n                         Path to patches config file. Defaults to patches.\n                           properties\n"
-	urlHelp    = "  -U, --repo-url=<url>   URL of the Base Repo\n"
-)
-
-var commands []*command
-
-func init() {
-	commands = []*command{
-		{"init", "Usage: patches init [-F=<configFile>] [-U=<url>]\n" +
-			"Create a new patches file if not existing and downloads the base repository as\n" +
-			"specified in patches.properties, but does not apply any patches.\n" + configWide + urlHelp,
-			[]option{optConfig, optURL}, runInit},
-		{"apply", "Usage: patches apply [-F=<configFile>]\nApplies the patches to the base repository\n" + configHelp,
-			[]option{optConfig}, runApply},
-		{"clean", "Usage: patches clean [-F=<configFile>]\nDelete all work files\n" + configHelp,
-			[]option{optConfig}, runClean},
-		{"create-patch", "Usage: patches create-patch [-F=<configFile>] [-U=<url>]\nCreates a new patch from the current commit\n" + configWide + urlHelp,
-			[]option{optConfig, optURL}, runCreatePatch},
-		{"config", "Usage: patches config [-BRF=<baseRepoRef>] [-BRU=<baseRepoUrl>]\n" +
-			"                      [-F=<configFile>] [-PDP=<patchesDirectoryPath>]\n" +
-			"Changes a value in the current patches config file\n" +
-			"      -BRF, --base-repo-ref=<baseRepoRef>\n         Set the default repository ref\n" +
-			"      -BRU, --base-repo-url=<baseRepoUrl>\n         Set the base repository url\n" + configHelp +
-			"      -PDP, --patches-directory-path=<patchesDirectoryPath>\n         Set the path to the patches directory\n",
-			[]option{optConfig, optBRU, optBRF, optPDP}, runConfig},
-		{"reset", "Usage: patches reset [-F=<configFile>]\nResets the workdir repository to the config base ref and the remote head state\n" + configHelp,
-			[]option{optConfig}, runReset},
-		{"convert-patches", "Usage: patches convert-patches [-F=<configFile>]\nConvert our patch format to git patches\n" + configHelp,
-			[]option{optConfig}, runConvert},
+// run executes the command line and returns the exit code.
+func (a *app) run(args []string) int {
+	cmd := func(name string, run func(cli.Values) error, opts ...cli.Option) *cli.Command {
+		return &cli.Command{Name: name, Usage: usage(name), Options: opts,
+			Run: func(v cli.Values) int { return a.report(run(v)) }}
 	}
+	app := &cli.App{
+		Name:    "patches",
+		Usage:   usage("patches"),
+		Version: currentVersion(),
+		Stdout:  a.stdout,
+		Stderr:  a.stderr,
+		Root: func() int {
+			a.error(logCLI, "No command specified. Use 'patches --help' for usage information.")
+			return exitOK
+		},
+		Commands: []*cli.Command{
+			cmd("init", a.runInit, configOption, urlOption),
+			cmd("apply", a.runApply, configOption),
+			cmd("clean", a.runClean, configOption),
+			cmd("create-patch", a.runCreatePatch, configOption, urlOption),
+			cmd("config", a.runConfig, configOption,
+				cli.Option{Short: "-BRU", Long: optBRU, Param: "<baseRepoUrl>"},
+				cli.Option{Short: "-BRF", Long: optBRF, Param: "<baseRepoRef>"},
+				cli.Option{Short: "-PDP", Long: optPDP, Param: "<patchesDirectoryPath>"}),
+			cmd("reset", a.runReset, configOption),
+			cmd("convert-patches", a.runConvert, configOption),
+		},
+	}
+	return app.Execute(args)
 }
 
-func runInit(v values) int {
-	file := v.get("--config", defaultConfigFile)
+// configFile returns the config file selected with -F.
+func (a *app) configFile(v cli.Values) string { return a.path(v.Get(optConfig, defaultConfigFile)) }
+
+func (a *app) runInit(v cli.Values) error {
+	file := a.configFile(v)
 	var c *config
 	created := false
 	if exists(file) {
-		c = loadConfig(file)
+		var err error
+		if c, err = loadConfig(file); err != nil {
+			a.report(err)
+			c = nil
+		}
 	} else {
 		// The example is always written to patches.properties, even with -F.
-		c = &config{URL: v.get("--repo-url", exampleURL), Ref: "main", PatchesDir: "patches"}
-		if err := c.save(defaultConfigFile); err != nil {
-			logProps.fail(err, "Failed to write example patches config file to disk")
+		c = &config{URL: v.Get(optURL, exampleURL), Ref: "main", PatchesDir: "patches"}
+		if err := c.save(a.path(defaultConfigFile)); err != nil {
+			a.logErr(logProps, err, "Failed to write example patches config file to disk")
 			c = nil
 		}
 		created = c != nil
 	}
 	switch {
 	case c == nil:
-		logInit.error("No valid patches configuration found?")
-		return exitUsage
+		return failure(exitUsage, logInit, nil, "No valid patches configuration found?")
 	case c.URL == exampleURL && created:
-		logInit.info("Create new base patches config file! Happy working :)")
-		return exitOK
+		a.info(logInit, "Create new base patches config file! Happy working :)")
+		return nil
 	case c.URL == exampleURL:
-		logInit.error("Example url %s cannot be used to download the base repository! Aborting!", exampleURL)
-		return exitUsage
+		return failure(exitUsage, logInit, nil, "Example url %s cannot be used to download the base repository! Aborting!", exampleURL)
 	}
-	if err := os.MkdirAll(c.PatchesDir, 0o777); err != nil {
-		if fi, statErr := os.Stat(c.PatchesDir); statErr == nil && !fi.IsDir() {
-			logInit.fail(err, "Patches directory exist but is not a directory!")
-			return exitUsage
+	dir := a.path(c.PatchesDir)
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		if fi, statErr := os.Stat(dir); statErr == nil && !fi.IsDir() {
+			return failure(exitUsage, logInit, err, "Patches directory exist but is not a directory!")
 		}
-		logInit.fail(err, "An error occurred at creating the patches directory")
+		a.logErr(logInit, err, "An error occurred at creating the patches directory")
 	}
-	return cloneRepo(c)
+	return a.cloneRepo(c)
 }
 
-func runApply(v values) int {
-	file := v.get("--config", defaultConfigFile)
+func (a *app) runApply(v cli.Values) error {
+	file := a.configFile(v)
 	if !exists(file) {
-		logApply.error("No patches config file found! Run patches init first!")
-		return exitUsage
+		return failure(exitUsage, logApply, nil, "No patches config file found! Run patches init first!")
 	}
-	c := loadConfig(file)
-	if c == nil {
-		logApply.error("An error occurred at applying patches")
-		return exitInternal
+	c, err := loadConfig(file)
+	if err != nil {
+		a.report(err)
+		return failure(exitInternal, logApply, nil, "An error occurred at applying patches")
 	}
-	if fi, err := os.Stat(c.PatchesDir); err != nil || !fi.IsDir() {
-		logApply.error("Patches directory path is not a directory!")
-		return exitUsage
+	if fi, err := os.Stat(a.path(c.PatchesDir)); err != nil || !fi.IsDir() {
+		return failure(exitUsage, logApply, nil, "Patches directory path is not a directory!")
 	}
-	if !exists(workdir) {
-		logApply.error("No workdir found!")
-		return exitUsage
+	if !exists(a.workdir()) {
+		return failure(exitUsage, logApply, nil, "No workdir found!")
 	}
-	return applyPatches(c)
+	return a.applyPatches(c)
 }
 
-func runClean(v values) int {
-	file := v.get("--config", defaultConfigFile)
+func (a *app) runClean(v cli.Values) error {
+	file := a.configFile(v)
 	if !exists(file) {
-		logClean.error("No patches config file found! Will not clean work directory")
-		return exitInternal
+		return failure(exitInternal, logClean, nil, "No patches config file found! Will not clean work directory")
 	}
-	if loadConfig(file) == nil {
+	if _, err := loadConfig(file); err != nil {
+		a.report(err)
 		return crash("invalid patches configuration")
 	}
-	logClean.info("Deleting %s directory", workdir)
-	if fi, err := os.Stat(workdir); err != nil || !fi.IsDir() {
-		logFile.error("Git repo dir specified in config is not a directory or does not exist?")
-		return exitOSError
+	a.info(logClean, "Deleting _workdir directory")
+	if fi, err := os.Stat(a.workdir()); err != nil || !fi.IsDir() {
+		return failure(exitCrash, logFile, nil, "Git repo dir specified in config is not a directory or does not exist?")
 	}
 	// os.RemoveAll does not follow symlinks, so nothing outside is deleted.
-	if err := os.RemoveAll(workdir); err != nil {
-		logFile.fail(err, "Unable to delete workdir directory: %s", workdir)
+	if err := os.RemoveAll(a.workdir()); err != nil {
+		a.logErr(logFile, err, "Unable to delete workdir directory: _workdir")
 	}
-	return exitOK
+	return nil
 }
 
-func runCreatePatch(v values) int {
-	file := v.get("--config", defaultConfigFile)
+func (a *app) runCreatePatch(v cli.Values) error {
+	file := a.configFile(v)
 	if !exists(file) {
-		logCreate.error("No valid patches configuration found!")
-		return exitUsage
+		return failure(exitUsage, logCreate, nil, "No valid patches configuration found!")
 	}
-	c := loadConfig(file)
-	logCreate.info("Specify the name of the new patch file: (Without .patch extension)")
-	name, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		logCreate.fail(err, "There was an error at reading from the default System input")
-		return exitOSError
+	c, configErr := loadConfig(file)
+	a.report(configErr)
+	a.info(logCreate, "Specify the name of the new patch file: (Without .patch extension)")
+	name, err := readLine(a.stdin)
+	if err != nil {
+		return failure(exitCrash, logCreate, err, "There was an error at reading from the default System input")
 	}
-	if name, _, _ = strings.Cut(name, "\n"); err != nil && name == "" {
-		name = "null" // like Java's readLine() at end of input
-	}
-	name, _, _ = strings.Cut(name, "\r")
-	if c == nil {
+	if configErr != nil {
 		return crash("invalid patches configuration")
 	}
-	return createPatch(c, name)
+	return a.createPatch(c, name)
 }
 
-func runConfig(v values) int {
-	file := v.get("--config", defaultConfigFile)
-	if !exists(file) {
-		logConfig.error("No patches config file found. Please run patches init first!")
-		return exitInternal
+// readLine reads one line like Java's BufferedReader.readLine(), which
+// returns null at the end of the input (the Java version then uses "null").
+func readLine(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
 	}
-	c := loadConfig(file)
-	if c == nil {
-		// Java fails when the first change is applied, or after this log line
-		_, url := v["--base-repo-url"]
-		_, ref := v["--base-repo-ref"]
-		_, dir := v["--patches-directory-path"]
-		if !url && !ref && !dir {
-			logConfig.info("Saving configuration changes to disk")
+	if line == "" && err != nil {
+		return "null", nil
+	}
+	line, _, _ = strings.Cut(line, "\n")
+	line, _, _ = strings.Cut(line, "\r")
+	return line, nil
+}
+
+func (a *app) runConfig(v cli.Values) error {
+	file := a.configFile(v)
+	if !exists(file) {
+		return failure(exitInternal, logConfig, nil, "No patches config file found. Please run patches init first!")
+	}
+	c, err := loadConfig(file)
+	if err != nil {
+		a.report(err)
+		// Java fails at the first change, or after logging that it saves.
+		if !v.Has(optBRU) && !v.Has(optBRF) && !v.Has(optPDP) {
+			a.info(logConfig, "Saving configuration changes to disk")
 		}
 		return crash("invalid patches configuration")
 	}
-	if s, ok := v["--base-repo-url"]; ok {
-		logConfig.info("Changing base repo url to '%s' from '%s'", s, c.URL)
+	if s, ok := v[optBRU]; ok {
+		a.info(logConfig, "Changing base repo url to '%s' from '%s'", s, c.URL)
 		c.URL = s
 	}
-	if s, ok := v["--base-repo-ref"]; ok {
-		logConfig.info("Changing base repo ref to '%s' from '%s'", s, c.Ref)
+	if s, ok := v[optBRF]; ok {
+		a.info(logConfig, "Changing base repo ref to '%s' from '%s'", s, c.Ref)
 		c.Ref = s
 	}
-	if s, ok := v["--patches-directory-path"]; ok {
-		logConfig.info("Changing patches directory path to '%s' from '%s'", s, c.PatchesDir)
-		if !exists(c.PatchesDir) || exists(s) {
-			logFile.error("Either the current patches directory does not exist or the new name of the directory is already in use! Aborting!")
+	if s, ok := v[optPDP]; ok {
+		a.info(logConfig, "Changing patches directory path to '%s' from '%s'", s, c.PatchesDir)
+		from, to := a.path(c.PatchesDir), a.path(s)
+		if !exists(from) || exists(to) {
+			a.error(logFile, "Either the current patches directory does not exist or the new name of the directory is already in use! Aborting!")
 		} else {
-			os.Rename(c.PatchesDir, s) // the config is changed even if this fails
+			// Like in the Java version a failed rename is ignored and the
+			// config is changed anyway.
+			_ = os.Rename(from, to)
 		}
 		c.PatchesDir = s
 	}
-	logConfig.info("Saving configuration changes to disk")
+	a.info(logConfig, "Saving configuration changes to disk")
 	if err := c.save(file); err != nil {
-		logProps.fail(err, "Failed to save patches configuration file to disk")
-		return exitOSError
+		return failure(exitCrash, logProps, err, "Failed to save patches configuration file to disk")
 	}
-	return exitOK
+	return nil
 }
 
-func runReset(v values) int {
-	file := v.get("--config", defaultConfigFile)
+func (a *app) runReset(v cli.Values) error {
+	file := a.configFile(v)
 	if !exists(file) {
-		logReset.error("Unable to reset repository. No config file found")
-		return exitUsage
+		return failure(exitUsage, logReset, nil, "Unable to reset repository. No config file found")
 	}
-	c := loadConfig(file)
-	logReset.info("Starting to reset the workdir repository")
-	if c == nil {
+	c, err := loadConfig(file)
+	a.report(err)
+	a.info(logReset, "Starting to reset the workdir repository")
+	if err != nil {
 		return crash("invalid patches configuration")
 	}
-	return resetRepo(c)
+	return a.resetRepo(c)
 }
 
-func runConvert(v values) int {
-	file := v.get("--config", defaultConfigFile)
+func (a *app) runConvert(v cli.Values) error {
+	file := a.configFile(v)
 	if !exists(file) {
-		logConvert.error("No valid patches configuration file found!")
-		return exitUsage
+		return failure(exitUsage, logConvert, nil, "No valid patches configuration file found!")
 	}
-	c := loadConfig(file)
-	logConvert.info("Start to convert our patches to git patches")
-	if c == nil {
+	c, err := loadConfig(file)
+	a.report(err)
+	a.info(logConvert, "Start to convert our patches to git patches")
+	if err != nil {
 		return crash("invalid patches configuration")
 	}
-	return convertPatches(c)
+	return a.convertPatches(c)
 }

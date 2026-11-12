@@ -1,0 +1,15 @@
+Usage: patches [-hV] [COMMAND]
+A command line tool for managing Git patches
+  -h, --help      Show this help message and exit.
+  -V, --version   Print version information and exit.
+Commands:
+  init             Create a new patches file if not existing and downloads the
+                     base repository as specified in patches.properties, but
+                     does not apply any patches.
+  apply            Applies the patches to the base repository
+  clean            Delete all work files
+  create-patch     Creates a new patch from the current commit
+  config           Changes a value in the current patches config file
+  reset            Resets the workdir repository to the config base ref and the
+                     remote head state
+  convert-patches  Convert our patch format to git patches

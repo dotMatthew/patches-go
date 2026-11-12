@@ -1,0 +1,4 @@
+Usage: patches reset [-F=<configFile>]
+Resets the workdir repository to the config base ref and the remote head state
+  -F, --config=<configFile>
+         Path to patches config file. Defaults to patches.properties
