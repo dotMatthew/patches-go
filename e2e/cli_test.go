@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"regexp"
 	"testing"
 )
 
@@ -55,8 +56,13 @@ func TestHelpAndVersion(t *testing.T) {
 	for _, args := range [][]string{{"-V"}, {"--version"}, {"-V", "foo"}, {"--version", "init"}} {
 		r := run(t, dir, "", args...)
 		expectCode(t, r, 0)
-		if r.Stdout != "patches 1.0.0\n" {
-			t.Fatalf("%v: unexpected version output %q", args, r.Stdout)
+		want := "patches " + expectedVersion + "\n"
+		if expectedVersion == "" {
+			if !regexp.MustCompile(`^patches \S+\n$`).MatchString(r.Stdout) {
+				t.Fatalf("%v: unexpected version output %q", args, r.Stdout)
+			}
+		} else if r.Stdout != want {
+			t.Fatalf("%v: version output %q, want %q", args, r.Stdout, want)
 		}
 	}
 }

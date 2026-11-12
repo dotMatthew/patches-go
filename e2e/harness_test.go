@@ -1,10 +1,11 @@
 // Package e2e contains black box tests for the patches CLI. Without
 // PATCHES_CMD the Go binary of this repository is built and tested. Any other
 // implementation (e.g. the original Java version) can be tested with the
-// same tests by setting PATCHES_CMD:
+// same tests by setting PATCHES_CMD (PATCHES_VERSION is the version it is
+// expected to print):
 //
 //	go test ./e2e
-//	PATCHES_CMD="java -jar /path/to/patches.jar" go test ./e2e
+//	PATCHES_CMD="java -jar /path/to/patches.jar" PATCHES_VERSION=1.0.0 go test ./e2e
 //
 // Golden files in testdata/ can be (re)generated with UPDATE_GOLDEN=1.
 package e2e
@@ -23,6 +24,13 @@ import (
 
 var patchesCmd []string
 
+// testVersion is compiled into the binary built by the tests.
+const testVersion = "0.0.0-e2e"
+
+// expectedVersion is the version `patches -V` must print; empty means any
+// version is accepted (PATCHES_CMD set without PATCHES_VERSION).
+var expectedVersion string
+
 func TestMain(m *testing.M) {
 	cmd := strings.Fields(os.Getenv("PATCHES_CMD"))
 	if len(cmd) == 0 {
@@ -32,6 +40,9 @@ func TestMain(m *testing.M) {
 			os.Exit(2)
 		}
 		cmd = []string{bin}
+		expectedVersion = testVersion
+	} else {
+		expectedVersion = os.Getenv("PATCHES_VERSION")
 	}
 	// Resolve relative paths against the e2e directory.
 	for i, c := range cmd {
@@ -64,7 +75,7 @@ func buildBinary() (string, error) {
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	out, err := exec.Command("go", "build", "-o", bin, "..").CombinedOutput()
+	out, err := exec.Command("go", "build", "-ldflags=-X main.version="+testVersion, "-o", bin, "..").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%v\n%s", err, out)
 	}

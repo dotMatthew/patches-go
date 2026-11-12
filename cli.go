@@ -129,7 +129,7 @@ loop:
 		fmt.Fprint(stdout, rootUsage)
 		return 0
 	case version:
-		fmt.Fprintln(stdout, "patches 1.0.0")
+		fmt.Fprintln(stdout, "patches "+currentVersion())
 		return 0
 	case cmd == nil:
 		logCLI.error("No command specified. Use 'patches --help' for usage information.")
