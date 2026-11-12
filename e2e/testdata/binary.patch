@@ -1,0 +1,26 @@
+From: Base Author <base@example.com>
+Date: Sun, 24 Dec 2023 18:00:00 GMT
+Subject: binary stuff
+
+with body
+
+diff --git a/b.txt b/b.txt
+index fe5841d..735949b 100644
+--- a/b.txt
++++ b/b.txt
+@@ -1,2 +1,3 @@
+ keep
+ more
++
+diff --git a/bin.dat b/bin.dat
+new file mode 100644
+index 0000000..c94be36
+--- /dev/null
++++ b/bin.dat
+Binary files differ
+diff --git a/cr.txt b/cr.txt
+new file mode 100644
+index 0000000..5c3727d
+--- /dev/null
++++ b/cr.txt
+Binary files differ
