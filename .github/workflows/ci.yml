@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (linux/amd64 + linux/arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet and test (amd64)
+        run: make test
+
+      - name: Build all platforms
+        run: make dist
+
+      # Runs the same black-box tests against the arm64 binary under qemu.
+      - name: Install qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Test (arm64 via qemu)
+        run: PATCHES_CMD="qemu-aarch64-static $PWD/dist/patches-linux-arm64" go test -count=1 ./e2e
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: patches-binaries
+          path: dist/
+          if-no-files-found: error
