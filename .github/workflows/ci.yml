@@ -9,32 +9,44 @@ permissions:
 
 jobs:
   test:
-    name: Test (linux/amd64 + linux/arm64)
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
       - name: Check formatting
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
 
-      - name: Vet and test (amd64)
+      - name: Vet and test
         run: make test
 
+  build:
+    name: Build binaries
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
       - name: Build all platforms
-        run: make dist
+        run: make checksums
 
-      # Runs the same black-box tests against the arm64 binary under qemu.
-      - name: Install qemu
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
-
-      - name: Test (arm64 via qemu)
-        run: PATCHES_CMD="qemu-aarch64-static $PWD/dist/patches-linux-arm64" go test -count=1 ./e2e
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: patches-binaries
           path: dist/
@@ -49,15 +61,15 @@ jobs:
       contents: write # create tags and GitHub releases
     concurrency: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # semantic-release needs the full history and tags
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
