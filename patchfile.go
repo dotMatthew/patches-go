@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -18,10 +20,9 @@ import (
 //	diff --git ...
 type patchFile struct {
 	Diff, Body  string
-	Subject     string // "null" if missing (Java concatenates the null reference)
+	Subject     string
 	Name, Email string
-	HasAuthor   bool      // a From header was found
-	Date        time.Time // zero if missing
+	Date        time.Time
 }
 
 const rfc1123 = "Mon, 2 Jan 2006 15:04:05 -0700"
@@ -30,13 +31,11 @@ const rfc1123 = "Mon, 2 Jan 2006 15:04:05 -0700"
 func writePatch(file, diffText, subject, body, name, email string, date time.Time) error {
 	switch {
 	case strings.TrimSpace(diffText) == "":
-		return failure(exitInternal, logPatch, nil, "No diff text found in commit!")
+		return failure(exitUsage, logPatch, nil, "The HEAD commit contains no changes")
 	case !strings.HasPrefix(diffText, "diff --git "):
-		return failure(exitInternal, logPatch, nil, "The specified diff is incorrect!")
-	case strings.TrimSpace(name) == "":
-		return failure(exitInternal, logPatch, nil, "The name of the author is null or blank!")
-	case strings.TrimSpace(email) == "":
-		return failure(exitInternal, logPatch, nil, "The email of the author is null or blank!")
+		return failure(exitInternal, logPatch, nil, "The generated diff is invalid")
+	case strings.TrimSpace(name) == "" || strings.TrimSpace(email) == "":
+		return failure(exitUsage, logPatch, nil, "The author of the HEAD commit has no name or email")
 	}
 	dateText := date.Format(rfc1123)
 	if _, offset := date.Zone(); offset == 0 {
@@ -52,21 +51,30 @@ func writePatch(file, diffText, subject, body, name, email string, date time.Tim
 		sb.WriteString("\n")
 	}
 	if err := os.WriteFile(file, []byte(sb.String()), 0o644); err != nil {
-		return failure(exitCrash, logPatch, err, "Unable to write patch file to disk")
+		return failure(exitIO, logPatch, err, "Unable to write the patch file %s", filepath.Base(file))
 	}
 	return nil
 }
 
-// readPatch parses a patch file.
+// readPatch parses a patch file. From, Date and Subject are required.
 func readPatch(file string) (*patchFile, error) {
 	raw, err := os.ReadFile(file)
 	if err != nil {
-		return nil, failure(exitInternal, logPatch, err, "Unable to read patch files from disk")
+		return nil, failure(exitIO, logPatch, err, "Unable to read the patch file %s", filepath.Base(file))
 	}
-	p := &patchFile{Subject: "null"}
+	p, err := parsePatch(toValidUTF8(raw))
+	if err != nil {
+		return nil, failure(exitUsage, logPatch, err, "Invalid patch file %s", filepath.Base(file))
+	}
+	return p, nil
+}
+
+func parsePatch(text string) (*patchFile, error) {
+	p := &patchFile{}
 	var diff, body strings.Builder
+	hasFrom, hasDate, hasSubject := false, false, false
 	section := "headers"
-	for _, line := range readLines(toValidUTF8(raw)) {
+	for _, line := range readLines(text) {
 		if section != "diff" && strings.HasPrefix(line, "diff --git ") {
 			section = "diff"
 		}
@@ -79,28 +87,42 @@ func readPatch(file string) (*patchFile, error) {
 			if strings.TrimSpace(line) == "" {
 				section = "body"
 			} else if v, ok := strings.CutPrefix(line, "From: "); ok {
-				// Java: split("<") must yield exactly two parts (trailing empty parts are dropped)
-				parts := strings.Split(v, "<")
-				for len(parts) > 0 && parts[len(parts)-1] == "" {
-					parts = parts[:len(parts)-1]
+				name, email, ok := parseAuthor(v)
+				if !ok {
+					return nil, fmt.Errorf("invalid From header %q, expected \"Name <email>\"", v)
 				}
-				if len(parts) != 2 {
-					return nil, failure(exitInternal, logPatch, nil, "Unable to parse from line from patch")
-				}
-				p.Name = strings.TrimSpace(parts[0])
-				p.Email = strings.ReplaceAll(strings.TrimSpace(parts[1]), ">", "")
-				p.HasAuthor = true
+				p.Name, p.Email, hasFrom = name, email, true
 			} else if v, ok := strings.CutPrefix(line, "Date: "); ok {
-				if p.Date, err = parseDate(strings.TrimSpace(v)); err != nil {
-					return nil, failure(exitInternal, logPatch, nil, "Unable to parse date from line from patch")
+				date, err := parseDate(strings.TrimSpace(v))
+				if err != nil {
+					return nil, fmt.Errorf("invalid Date header %q", v)
 				}
+				p.Date, hasDate = date, true
 			} else if v, ok := strings.CutPrefix(line, "Subject: "); ok {
-				p.Subject = strings.TrimSpace(v)
+				p.Subject, hasSubject = strings.TrimSpace(v), true
 			}
 		}
 	}
+	switch {
+	case !hasFrom:
+		return nil, errors.New("missing From header")
+	case !hasDate:
+		return nil, errors.New("missing Date header")
+	case !hasSubject:
+		return nil, errors.New("missing Subject header")
+	}
 	p.Diff, p.Body = diff.String(), body.String()
 	return p, nil
+}
+
+// parseAuthor splits "Name <email>".
+func parseAuthor(s string) (name, email string, ok bool) {
+	before, rest, found := strings.Cut(s, "<")
+	email, after, closed := strings.Cut(rest, ">")
+	if !found || !closed || strings.TrimSpace(after) != "" || strings.ContainsAny(email, "<>") {
+		return "", "", false
+	}
+	return strings.TrimSpace(before), strings.TrimSpace(email), true
 }
 
 // parseDate parses an RFC 1123 date ("[Tue, ]3 Jun 2008 11:05[:30] GMT|+0200").

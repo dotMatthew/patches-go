@@ -14,10 +14,7 @@ import (
 func readPropertiesConfig(data []byte) (*config, error) {
 	p, err := parseProperties(data)
 	if err != nil {
-		return nil, failure(exitCrash, logProps, err, "Failed to load patches configuration")
-	}
-	if len(p) == 0 {
-		return nil, failure(exitCrash, logProps, nil, "Could not load properties file")
+		return nil, err
 	}
 	url, okURL := p["baseRepoUrl"]
 	ref, okRef := p["baseRepoRef"]
@@ -26,7 +23,7 @@ func readPropertiesConfig(data []byte) (*config, error) {
 		dir = defaultPatchesDir
 	}
 	if !okURL || !okRef {
-		return nil, &cmdError{code: exitCrash, logger: logProps, level: "INFO", msg: "Keys cannot be loaded from properties file!"}
+		return nil, errors.New("baseRepoUrl and baseRepoRef are required")
 	}
 	return &config{URL: url, Ref: ref, PatchesDir: dir}, nil
 }

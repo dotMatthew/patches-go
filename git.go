@@ -24,7 +24,7 @@ func (a *app) cloneRepo(c *config) error {
 	a.info(logGit, "Start to download the repository")
 	if fi, err := os.Stat(a.workdir()); err == nil {
 		if entries, _ := os.ReadDir(a.workdir()); !fi.IsDir() || len(entries) > 0 {
-			return crash("destination path %q already exists and is not an empty directory", "_workdir")
+			return failure(exitUsage, logGit, nil, "The work directory _workdir already exists. Use patches reset to update it or patches clean to remove it!")
 		}
 	}
 	if err := a.clone(c.URL, c.Ref); err != nil {
@@ -93,7 +93,7 @@ func (a *app) resetRepo(c *config) error {
 		return failure(exitInternal, logGit, err, "An error occurred at resetting repository")
 	}
 	if target == nil {
-		return failure(exitInternal, logGit, nil, "Could not found commit id for base ref")
+		return failure(exitUsage, logGit, nil, "Could not find the base ref %q in the repository", c.Ref)
 	}
 	if err := a.hardReset(repo, wt, *target); err != nil {
 		return failure(exitInternal, logGit, err, "An error occurred at resetting repository")

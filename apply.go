@@ -17,7 +17,7 @@ import (
 func (a *app) applyPatches(c *config) error {
 	files := listPatches(a.path(c.PatchesDir))
 	if len(files) == 0 {
-		a.error(logGit, "No patches to apply found")
+		a.info(logGit, "No patches to apply found")
 		return nil
 	}
 	_, wt, err := a.openWorktree()
@@ -46,16 +46,10 @@ func (a *app) applyPatch(wt *git.Worktree, file string) error {
 	a.info(logGit, "Applying patch %s", name)
 	p, err := readPatch(file)
 	if err != nil {
-		a.report(err)
-		return failure(exitInternal, logGit, nil, "An error occurred at applying patch")
+		return err
 	}
 	if err := a.applyAndStage(wt, p.Diff); err != nil {
 		return failure(exitInternal, logGit, err, "An error occurred at applying patch %s ", name)
-	}
-	// Like in the Java version the author is checked after the diff has
-	// been applied (the changes then stay staged).
-	if !p.HasAuthor || p.Date.IsZero() {
-		return failure(exitInternal, logGit, nil, "An error occurred at applying patch")
 	}
 	sig := &object.Signature{Name: p.Name, Email: p.Email, When: p.Date}
 	opts := &git.CommitOptions{Author: sig, Committer: sig, AllowEmptyCommits: true}
@@ -133,25 +127,22 @@ func leadingNumber(name string) (string, bool) {
 func (a *app) convertPatches(c *config) error {
 	files := listPatches(a.path(c.PatchesDir))
 	if len(files) == 0 {
-		a.error(logGit, "No patches to convert found")
+		a.info(logGit, "No patches to convert found")
 		return nil
 	}
 	out := a.path("converted")
 	if err := os.MkdirAll(out, 0o777); err != nil {
-		return failure(exitCrash, logGit, err, "Unable to create converted directory")
+		return failure(exitIO, logGit, err, "Unable to create converted directory")
 	}
 	for _, file := range files {
 		name := filepath.Base(file)
 		target := filepath.Join(out, name)
 		p, err := readPatch(file)
 		if err != nil {
-			a.report(err)
-			// The Java version creates the (empty) file before it fails.
-			_ = os.WriteFile(target, nil, 0o644)
-			return crash("invalid patch %s", name)
+			return err
 		}
 		if err := os.WriteFile(target, []byte(p.Diff), 0o644); err != nil {
-			return failure(exitCrash, logGit, err, "Unable to write converted patches to disk")
+			return failure(exitIO, logGit, err, "Unable to write converted patches to disk")
 		}
 		a.info(logGit, "Successfully converted patch %s", name)
 	}

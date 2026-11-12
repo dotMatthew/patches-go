@@ -1,13 +1,13 @@
 // Package e2e contains black box tests for the patches CLI. Without
-// PATCHES_CMD the Go binary of this repository is built and tested. Any other
-// implementation (e.g. the original Java version) can be tested with the
-// same tests by setting PATCHES_CMD (PATCHES_VERSION is the version it is
-// expected to print):
+// PATCHES_CMD the binary of this repository is built and tested. A prebuilt
+// binary (e.g. for another architecture) can be tested by setting PATCHES_CMD
+// (PATCHES_VERSION is the version it is expected to print):
 //
 //	go test ./e2e
-//	PATCHES_CMD="java -jar /path/to/patches.jar" PATCHES_VERSION=1.0.0 PATCHES_JAVA=1 go test ./e2e
+//	PATCHES_CMD="qemu-aarch64-static dist/patches-linux-arm64" go test ./e2e
 //
-// Golden files in testdata/ can be (re)generated with UPDATE_GOLDEN=1.
+// The golden files in testdata/ were created with the original Java version
+// (the generated patches are byte-identical); UPDATE_GOLDEN=1 rewrites them.
 package e2e
 
 import (
@@ -25,37 +25,8 @@ import (
 
 var patchesCmd []string
 
-// javaImpl is set when the original Java version is tested. It uses
-// patches.properties, the Go version patches.toml (with migration).
-var javaImpl = os.Getenv("PATCHES_JAVA") == "1"
-
-// configName is the default config file of the tested implementation.
-func configName() string {
-	if javaImpl {
-		return "patches.properties"
-	}
-	return "patches.toml"
-}
-
-// goOnly skips tests of behavior that deliberately differs from the Java version.
-func goOnly(t *testing.T) {
-	t.Helper()
-	if javaImpl {
-		t.Skip("Go only: the Go version uses TOML config files")
-	}
-}
-
-// forImpl adapts a help text of the Java version to the tested implementation.
-func forImpl(javaText string) string {
-	if javaImpl {
-		return javaText
-	}
-	return strings.NewReplacer(
-		"Defaults to patches.\n                           properties", "Defaults to patches.toml",
-		"Defaults to patches.properties", "Defaults to patches.toml",
-		"specified in patches.properties, but", "specified in patches.toml, but",
-	).Replace(javaText)
-}
+// configName is the default config file.
+const configName = "patches.toml"
 
 // testVersion is compiled into the binary built by the tests.
 const testVersion = "0.0.0-e2e"
@@ -288,15 +259,12 @@ func (f *fixture) workdir() string { return filepath.Join(f.Project, "_workdir")
 // writeConfig writes the config file in the project directory.
 func (f *fixture) writeConfig(t *testing.T, ref string) {
 	t.Helper()
-	if !javaImpl {
-		writeFile(t, filepath.Join(f.Project, "patches.toml"), fmt.Sprintf(
-			"base_repo_url = %q\nbase_repo_ref = %q\npatches_directory = \"patches\"\n", f.Base, ref), 0o644)
-		return
-	}
-	f.writePropertiesConfig(t, ref)
+	writeFile(t, filepath.Join(f.Project, configName), fmt.Sprintf(
+		"base_repo_url = %q\nbase_repo_ref = %q\npatches_directory = \"patches\"\n", f.Base, ref), 0o644)
 }
 
-// writePropertiesConfig writes patches.properties (the Java config format).
+// writePropertiesConfig writes patches.properties (the old config format,
+// which is migrated to TOML).
 func (f *fixture) writePropertiesConfig(t *testing.T, ref string) {
 	t.Helper()
 	// The Java Properties format needs ':' and '\' escaped.

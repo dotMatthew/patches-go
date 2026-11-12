@@ -5,13 +5,13 @@ import (
 	"testing"
 )
 
-var rootUsage = forImpl(`Usage: patches [-hV] [COMMAND]
+const rootUsage = `Usage: patches [-hV] [COMMAND]
 A command line tool for managing Git patches
   -h, --help      Show this help message and exit.
   -V, --version   Print version information and exit.
 Commands:
   init             Create a new patches file if not existing and downloads the
-                     base repository as specified in patches.properties, but
+                     base repository as specified in patches.toml, but
                      does not apply any patches.
   apply            Applies the patches to the base repository
   clean            Delete all work files
@@ -20,18 +20,17 @@ Commands:
   reset            Resets the workdir repository to the config base ref and the
                      remote head state
   convert-patches  Convert our patch format to git patches
-`)
+`
 
-var initUsage = forImpl(`Usage: patches init [-F=<configFile>] [-U=<url>]
+const initUsage = `Usage: patches init [-F=<configFile>] [-U=<url>]
 Create a new patches file if not existing and downloads the base repository as
-specified in patches.properties, but does not apply any patches.
+specified in patches.toml, but does not apply any patches.
   -F, --config=<configFile>
-                         Path to patches config file. Defaults to patches.
-                           properties
+                         Path to patches config file. Defaults to patches.toml
   -U, --repo-url=<url>   URL of the Base Repo
-`)
+`
 
-var configUsage = forImpl(`Usage: patches config [-BRF=<baseRepoRef>] [-BRU=<baseRepoUrl>]
+const configUsage = `Usage: patches config [-BRF=<baseRepoRef>] [-BRU=<baseRepoUrl>]
                       [-F=<configFile>] [-PDP=<patchesDirectoryPath>]
 Changes a value in the current patches config file
       -BRF, --base-repo-ref=<baseRepoRef>
@@ -39,10 +38,10 @@ Changes a value in the current patches config file
       -BRU, --base-repo-url=<baseRepoUrl>
          Set the base repository url
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml
       -PDP, --patches-directory-path=<patchesDirectoryPath>
          Set the path to the patches directory
-`)
+`
 
 func TestHelpAndVersion(t *testing.T) {
 	dir := t.TempDir()
@@ -122,29 +121,29 @@ func TestSubcommandUsages(t *testing.T) {
 		"apply": `Usage: patches apply [-F=<configFile>]
 Applies the patches to the base repository
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml
 `,
 		"clean": `Usage: patches clean [-F=<configFile>]
 Delete all work files
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml
 `,
-		"create-patch": `Usage: patches create-patch [-F=<configFile>] [-U=<url>]
+		"create-patch": `Usage: patches create-patch [-F=<configFile>] [-n=<name>]
 Creates a new patch from the current commit
   -F, --config=<configFile>
-                         Path to patches config file. Defaults to patches.
-                           properties
-  -U, --repo-url=<url>   URL of the Base Repo
+                         Path to patches config file. Defaults to patches.toml
+  -n, --name=<name>      Name of the patch file (without .patch). Asked for
+                           on standard input if not given.
 `,
 		"reset": `Usage: patches reset [-F=<configFile>]
 Resets the workdir repository to the config base ref and the remote head state
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml
 `,
 		"convert-patches": `Usage: patches convert-patches [-F=<configFile>]
 Convert our patch format to git patches
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml
 `,
 		"config": configUsage,
 		"init":   initUsage,
@@ -153,7 +152,7 @@ Convert our patch format to git patches
 	for cmd, usage := range usages {
 		r := run(t, dir, "", cmd, "--x")
 		expectCode(t, r, 2)
-		if want := "Unknown option: '--x'\n" + forImpl(usage); r.Stderr != want {
+		if want := "Unknown option: '--x'\n" + usage; r.Stderr != want {
 			t.Errorf("%s: stderr\n%s\nwant\n%s", cmd, r.Stderr, want)
 		}
 	}
@@ -163,14 +162,14 @@ func TestOptionSyntaxVariants(t *testing.T) {
 	// All spellings must select the given config file, which does not exist.
 	dir := t.TempDir()
 	for _, args := range [][]string{
-		{"clean", "-F", "nope.properties"},
-		{"clean", "-Fnope.properties"},
-		{"clean", "-F=nope.properties"},
-		{"clean", "--config", "nope.properties"},
-		{"clean", "--config=nope.properties"},
+		{"clean", "-F", "nope.toml"},
+		{"clean", "-Fnope.toml"},
+		{"clean", "-F=nope.toml"},
+		{"clean", "--config", "nope.toml"},
+		{"clean", "--config=nope.toml"},
 	} {
 		r := run(t, dir, "", args...)
-		expectCode(t, r, 42)
-		expectLogLine(t, r, "ERROR d.t.patches.cli.command.CleanCommand - No patches config file found! Will not clean work directory")
+		expectCode(t, r, 8)
+		expectLogLine(t, r, "ERROR d.t.p.c.PatchesConfiguration - No config file nope.toml found. Run patches init first!")
 	}
 }

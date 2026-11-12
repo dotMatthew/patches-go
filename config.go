@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,28 +34,32 @@ func exists(path string) bool {
 }
 
 // loadConfig reads a config file: TOML, or the old properties format if the
-// file name ends with ".properties". The error describes why it is invalid
-// (callers report it and decide how to go on).
+// file name ends with ".properties".
 func loadConfig(file string) (*config, error) {
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return nil, failure(exitCrash, logProps, err, "Failed to load patches configuration")
+		return nil, failure(exitIO, logProps, err, "Unable to read the config file %s", filepath.Base(file))
 	}
+	c, err := parseConfig(file, data)
+	if err != nil {
+		return nil, failure(exitUsage, logProps, err, "Invalid config file %s", filepath.Base(file))
+	}
+	return c, nil
+}
+
+func parseConfig(file string, data []byte) (*config, error) {
 	if isPropertiesFile(file) {
 		return readPropertiesConfig(data)
 	}
 	var c config
 	meta, err := toml.Decode(string(data), &c)
-	if err == nil {
-		if unknown := meta.Undecoded(); len(unknown) > 0 {
-			err = fmt.Errorf("unknown keys: %v", unknown)
-		}
-	}
-	if err != nil {
-		return nil, failure(exitCrash, logProps, err, "Failed to load patches configuration")
-	}
-	if !meta.IsDefined("base_repo_url") || !meta.IsDefined("base_repo_ref") {
-		return nil, &cmdError{code: exitCrash, logger: logProps, level: "INFO", msg: "Keys cannot be loaded from config file!"}
+	switch {
+	case err != nil:
+		return nil, err
+	case len(meta.Undecoded()) > 0:
+		return nil, fmt.Errorf("unknown keys: %v", meta.Undecoded())
+	case !meta.IsDefined("base_repo_url") || !meta.IsDefined("base_repo_ref"):
+		return nil, errors.New("base_repo_url and base_repo_ref are required")
 	}
 	if c.PatchesDir == "" {
 		c.PatchesDir = defaultPatchesDir

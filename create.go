@@ -38,24 +38,23 @@ func (a *app) createPatch(c *config, name string) error {
 	}
 	head, err := commitOf(repo, "HEAD")
 	if err != nil {
-		return crash("%v", err)
+		return failure(exitInternal, logGit, err, "An error occurred at creating this patch")
 	}
-	parent, err := commitOf(repo, "HEAD~1")
+	if head.NumParents() == 0 {
+		return failure(exitUsage, logGit, nil, "The HEAD commit has no parent, there is nothing to create a patch from")
+	}
+	parent, err := head.Parent(0)
 	if err != nil {
-		return crash("%v", err)
+		return failure(exitInternal, logGit, err, "An error occurred at creating this patch")
 	}
 	diffText, err := a.formatDiff(repo, parent, head)
 	if err != nil {
 		return failure(exitInternal, logGit, err, "An error occurred at creating this patch")
 	}
-	subject, body, ok := strings.Cut(head.Message, "\n")
-	if !ok || strings.TrimSpace(head.Message) == "" {
-		return crash("commit message has no subject line")
-	}
+	subject, body, _ := strings.Cut(head.Message, "\n")
 	file := filepath.Join(a.path(c.PatchesDir), name+".patch")
-	// Like in the Java version a failed write is only logged.
 	if err := writePatch(file, diffText, subject, body, head.Author.Name, head.Author.Email, head.Author.When); err != nil {
-		a.report(err)
+		return err
 	}
 	a.info(logGit, "Patch successfully created and saved to disk! (%s.patch)", name)
 	return nil

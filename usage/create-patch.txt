@@ -1,5 +1,6 @@
-Usage: patches create-patch [-F=<configFile>] [-U=<url>]
+Usage: patches create-patch [-F=<configFile>] [-n=<name>]
 Creates a new patch from the current commit
   -F, --config=<configFile>
                          Path to patches config file. Defaults to patches.toml
-  -U, --repo-url=<url>   URL of the Base Repo
+  -n, --name=<name>      Name of the patch file (without .patch). Asked for
+                           on standard input if not given.

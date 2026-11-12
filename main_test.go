@@ -23,7 +23,7 @@ func TestInitCreatesExampleConfig(t *testing.T) {
 	if code := a.run([]string{"init"}); code != exitOK {
 		t.Fatalf("exit code %d", code)
 	}
-	if !strings.Contains(stdout.String(), "Create new base patches config file! Happy working :)") {
+	if !strings.Contains(stdout.String(), "Created the config file patches.toml.") {
 		t.Fatalf("unexpected output %q", stdout)
 	}
 	c, err := loadConfig(filepath.Join(a.dir, defaultConfigFile))
@@ -37,11 +37,11 @@ func TestInvalidConfigIsReported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(a.dir, defaultConfigFile), []byte("base_repo_url = \"u\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code := a.run([]string{"reset"}); code != exitCrash {
+	if code := a.run([]string{"reset"}); code != exitUsage {
 		t.Fatalf("exit code %d", code)
 	}
-	if !strings.Contains(stdout.String(), "INFO  d.t.p.c.PatchesConfiguration - Keys cannot be loaded from config file!") ||
-		!strings.HasPrefix(stderr.String(), "Exception: ") {
+	if !strings.Contains(stdout.String(), "ERROR d.t.p.c.PatchesConfiguration - Invalid config file patches.toml\nbase_repo_url and base_repo_ref are required\n") ||
+		stderr.Len() != 0 {
 		t.Fatalf("stdout %q stderr %q", stdout, stderr)
 	}
 }
@@ -95,7 +95,7 @@ func TestComparePatchNames(t *testing.T) {
 }
 
 func TestReadLine(t *testing.T) {
-	for in, want := range map[string]string{"name\nrest": "name", "name\r\n": "name", "last": "last", "": "null", "\n": ""} {
+	for in, want := range map[string]string{"name\nrest": "name", "name\r\n": "name", "last": "last", "": "", "\n": ""} {
 		if got, err := readLine(strings.NewReader(in)); err != nil || got != want {
 			t.Errorf("readLine(%q) = %q, %v", in, got, err)
 		}

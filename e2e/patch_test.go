@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -186,48 +188,71 @@ func TestCreatePatchDiffAlgorithm(t *testing.T) {
 }
 
 func TestCreatePatchErrors(t *testing.T) {
-	dir := t.TempDir()
-	r := run(t, dir, "x\n", "create-patch")
-	expectCode(t, r, 8)
-	expectLogLine(t, r, "ERROR d.t.p.cli.command.CreatePatchCommand - No valid patches configuration found!")
-
 	f := newFixture(t)
 	f.initProject(t, "main")
 
 	// dirty work directory
 	writeFile(t, filepath.Join(f.workdir(), "untracked.txt"), "x", 0o644)
-	r = run(t, f.Project, "dirty\n", "create-patch")
+	r := run(t, f.Project, "dirty\n", "create-patch")
 	expectCode(t, r, 8)
 	expectLogLine(t, r, "ERROR d.t.patches.internal.git.GitService - Your repository is not in a clean state. Cannot create a patch from an unclean state")
 	if err := os.Remove(filepath.Join(f.workdir(), "untracked.txt")); err != nil {
 		t.Fatal(err)
 	}
 
-	// an ignored file does not make the repository dirty
-	writeFile(t, filepath.Join(f.workdir(), "debug.log"), "x", 0o644)
-	r = run(t, f.Project, "", "create-patch")
-	expectCode(t, r, 0)
-	// EOF on stdin: the Java version uses the string "null" as name
-	if !exists(filepath.Join(f.Project, "patches", "null.patch")) {
-		t.Fatal("null.patch not created")
+	// no name: neither --name nor input
+	for _, stdin := range []string{"", "\n", "   \n"} {
+		r = run(t, f.Project, stdin, "create-patch")
+		expectCode(t, r, 8)
+		expectLogLine(t, r, "ERROR d.t.p.cli.command.CreatePatchCommand - No patch name given")
 	}
-	if !strings.Contains(readFile(t, filepath.Join(f.Project, "patches", "null.patch")), "Subject: second\n") {
-		t.Fatal("unexpected patch content")
+	for _, name := range []string{"a/b", `a\b`, ".."} {
+		r = run(t, f.Project, "", "create-patch", "--name", name)
+		expectCode(t, r, 8)
+		expectLog(t, r, "ERROR", fmt.Sprintf("Invalid patch name %q: it must not contain path separators", name))
+	}
+	if entries, _ := os.ReadDir(filepath.Join(f.Project, "patches")); len(entries) != 0 {
+		t.Fatalf("no patch must be written: %v", entries)
 	}
 
-	// missing patches directory: the error is logged but the exit code is 0
+	// missing patches directory
 	if err := os.RemoveAll(filepath.Join(f.Project, "patches")); err != nil {
 		t.Fatal(err)
 	}
 	r = run(t, f.Project, "lost\n", "create-patch")
-	expectCode(t, r, 0)
-	expectLog(t, r, "ERROR", "Unable to write patch file to disk")
+	expectCode(t, r, 1)
+	expectLog(t, r, "ERROR", "Unable to write the patch file lost.patch")
+	if strings.Contains(r.Stdout, "successfully") {
+		t.Fatal("no success message expected")
+	}
 
-	// empty commit: no diff text
+	// empty commit: no changes
+	if err := os.Mkdir(filepath.Join(f.Project, "patches"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	git(t, f.workdir(), "commit", "-q", "--allow-empty", "-m", "empty")
 	r = run(t, f.Project, "empty\n", "create-patch")
-	expectCode(t, r, 0)
-	expectLogLine(t, r, "ERROR d.t.patches.internal.git.DiffService - No diff text found in commit!")
+	expectCode(t, r, 8)
+	expectLogLine(t, r, "ERROR d.t.patches.internal.git.DiffService - The HEAD commit contains no changes")
+}
+
+func TestCreatePatchNonInteractive(t *testing.T) {
+	f := newFixture(t)
+	f.initProject(t, "main")
+	// an ignored file does not make the repository dirty
+	writeFile(t, filepath.Join(f.workdir(), "debug.log"), "x", 0o644)
+	for _, args := range [][]string{{"--name", "0001_one"}, {"-n", "0002_two.patch"}, {"--name=0003_three"}} {
+		r := run(t, f.Project, "ignored stdin\n", append([]string{"create-patch"}, args...)...)
+		expectCode(t, r, 0)
+		if strings.Contains(r.Stdout, "Specify the name") {
+			t.Fatal("create-patch must not ask for a name given with --name")
+		}
+	}
+	for _, name := range []string{"0001_one", "0002_two", "0003_three"} {
+		if !strings.Contains(readFile(t, filepath.Join(f.Project, "patches", name+".patch")), "Subject: second\n") {
+			t.Fatalf("%s.patch has unexpected content", name)
+		}
+	}
 }
 
 func TestCreatePatchOnInitialCommit(t *testing.T) {
@@ -245,9 +270,32 @@ func TestCreatePatchOnInitialCommit(t *testing.T) {
 	git(t, base, "add", ".")
 	git(t, base, "commit", "-q", "-m", "only commit")
 	expectCode(t, run(t, project, "", "init", "-U", base), 0)
-	// HEAD~1 does not exist -> NullPointerException in Java -> exit 1
 	r := run(t, project, "p\n", "create-patch")
-	expectCode(t, r, 1)
+	expectCode(t, r, 8)
+	expectLogLine(t, r, "ERROR d.t.patches.internal.git.GitService - The HEAD commit has no parent, there is nothing to create a patch from")
+}
+
+func TestCreatePatchCommitWithoutNewline(t *testing.T) {
+	f := newFixture(t)
+	f.initProject(t, "main")
+	writeFile(t, filepath.Join(f.workdir(), "b.txt"), "changed\n", 0o644)
+	git(t, f.workdir(), "add", "-A")
+	// a message without trailing newline (git commit always adds one)
+	tree := strings.TrimSpace(git(t, f.workdir(), "write-tree"))
+	cmd := exec.Command("git", "commit-tree", tree, "-p", "HEAD")
+	cmd.Dir = f.workdir()
+	cmd.Env = append(os.Environ(), gitEnv("")...)
+	cmd.Stdin = strings.NewReader("no newline")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.workdir(), "reset", "-q", "--hard", strings.TrimSpace(string(out)))
+	r := run(t, f.Project, "", "create-patch", "-n", "nl")
+	expectCode(t, r, 0)
+	if !strings.Contains(readFile(t, filepath.Join(f.Project, "patches", "nl.patch")), "Subject: no newline\n") {
+		t.Fatal("unexpected subject")
+	}
 }
 
 func TestApplyWithOffsetsAndHandWrittenPatch(t *testing.T) {
@@ -284,34 +332,23 @@ func TestApplyWithOffsetsAndHandWrittenPatch(t *testing.T) {
 }
 
 func TestApplyErrors(t *testing.T) {
-	dir := t.TempDir()
-	r := run(t, dir, "", "apply")
-	expectCode(t, r, 8)
-	expectLogLine(t, r, "ERROR d.t.patches.cli.command.ApplyCommand - No patches config file found! Run patches init first!")
-
-	// invalid config -> NullPointerException is caught -> 42
-	writeFile(t, filepath.Join(dir, "patches.properties"), "a=b\n", 0o644)
-	r = run(t, dir, "", "apply")
-	expectCode(t, r, 42)
-	expectLog(t, r, "ERROR", "An error occurred at applying patches")
-
 	f := newFixture(t)
 	f.writeConfig(t, "main")
-	r = run(t, f.Project, "", "apply")
+	r := run(t, f.Project, "", "apply")
 	expectCode(t, r, 8)
-	expectLogLine(t, r, "ERROR d.t.patches.cli.command.ApplyCommand - Patches directory path is not a directory!")
+	expectLogLine(t, r, "ERROR d.t.patches.cli.command.ApplyCommand - The patches directory patches does not exist!")
 
 	if err := os.Mkdir(filepath.Join(f.Project, "patches"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r = run(t, f.Project, "", "apply")
 	expectCode(t, r, 8)
-	expectLogLine(t, r, "ERROR d.t.patches.cli.command.ApplyCommand - No workdir found!")
+	expectLogLine(t, r, "ERROR d.t.patches.cli.command.ApplyCommand - No work directory found. Run patches init first!")
 
 	expectCode(t, run(t, f.Project, "", "init"), 0)
 	r = run(t, f.Project, "", "apply")
 	expectCode(t, r, 0)
-	expectLogLine(t, r, "ERROR d.t.patches.internal.git.GitService - No patches to apply found")
+	expectLogLine(t, r, "INFO  d.t.patches.internal.git.GitService - No patches to apply found")
 
 	// dirty repository
 	writeFile(t, filepath.Join(f.Project, "patches", "p.patch"), "From: A <a@b>\nDate: Tue, 3 Jun 2008 11:05:30 GMT\nSubject: s\n\n", 0o644)
@@ -332,33 +369,27 @@ func TestApplyErrors(t *testing.T) {
 		t.Fatal("empty patch changed the tree")
 	}
 
-	// unparsable From header
-	writeFile(t, filepath.Join(f.Project, "patches", "p.patch"), "From: no mail address\nSubject: s\n\n", 0o644)
-	r = run(t, f.Project, "", "apply")
-	expectCode(t, r, 42)
-	expectLogLine(t, r, "ERROR d.t.patches.internal.git.DiffService - Unable to parse from line from patch")
-
-	// unparsable Date header
-	writeFile(t, filepath.Join(f.Project, "patches", "p.patch"), "From: A <a@b>\nDate: yesterday\nSubject: s\n\n", 0o644)
-	r = run(t, f.Project, "", "apply")
-	expectCode(t, r, 42)
-	expectLogLine(t, r, "ERROR d.t.patches.internal.git.DiffService - Unable to parse date from line from patch")
-
-	// wrong day of week
-	writeFile(t, filepath.Join(f.Project, "patches", "p.patch"), "From: A <a@b>\nDate: Mon, 3 Jun 2008 11:05:30 GMT\nSubject: s\n\n", 0o644)
-	r = run(t, f.Project, "", "apply")
-	expectCode(t, r, 42)
-
-	// missing Date header -> NullPointerException -> 42, but the diff is applied and staged
-	writeFile(t, filepath.Join(f.Project, "patches", "p.patch"), "From: A <a@b>\nSubject: s\n\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..3e75765\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n", 0o644)
-	head := headCommit(t, f.workdir())
-	r = run(t, f.Project, "", "apply")
-	expectCode(t, r, 42)
-	if headCommit(t, f.workdir()) != head {
-		t.Fatal("no commit expected")
-	}
-	if got := statusPorcelain(t, f.workdir()); got != "A  new.txt\n" {
-		t.Fatalf("status = %q", got)
+	// Invalid headers are rejected before anything is applied.
+	diff := "diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..3e75765\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n"
+	for headers, msg := range map[string]string{
+		"From: no mail address\nDate: Tue, 3 Jun 2008 11:05:30 GMT\nSubject: s\n": `invalid From header "no mail address", expected "Name <email>"`,
+		"From: A <a@b>\nDate: yesterday\nSubject: s\n":                            `invalid Date header "yesterday"`,
+		"From: A <a@b>\nDate: Mon, 3 Jun 2008 11:05:30 GMT\nSubject: s\n":         `invalid Date header "Mon, 3 Jun 2008 11:05:30 GMT"`,
+		"Date: Tue, 3 Jun 2008 11:05:30 GMT\nSubject: s\n":                        "missing From header",
+		"From: A <a@b>\nSubject: s\n":                                             "missing Date header",
+		"From: A <a@b>\nDate: Tue, 3 Jun 2008 11:05:30 GMT\n":                     "missing Subject header",
+	} {
+		writeFile(t, filepath.Join(f.Project, "patches", "p.patch"), headers+"\n"+diff, 0o644)
+		head := headCommit(t, f.workdir())
+		r = run(t, f.Project, "", "apply")
+		expectCode(t, r, 8)
+		expectLogLine(t, r, "ERROR d.t.patches.internal.git.DiffService - Invalid patch file p.patch")
+		if !strings.Contains(r.Stdout, msg) {
+			t.Fatalf("missing cause %q in:\n%s", msg, r.Stdout)
+		}
+		if headCommit(t, f.workdir()) != head || statusPorcelain(t, f.workdir()) != "" {
+			t.Fatal("nothing must be applied")
+		}
 	}
 }
 
@@ -417,17 +448,12 @@ func TestApplyCRLFFile(t *testing.T) {
 }
 
 func TestConvertPatches(t *testing.T) {
-	dir := t.TempDir()
-	r := run(t, dir, "", "convert-patches")
-	expectCode(t, r, 8)
-	expectLogLine(t, r, "ERROR d.t.p.c.c.ConvertPatchesCommand - No valid patches configuration file found!")
-
 	f := newFixture(t)
 	f.initProject(t, "main")
-	r = run(t, f.Project, "", "convert-patches")
+	r := run(t, f.Project, "", "convert-patches")
 	expectCode(t, r, 0)
 	expectLogLine(t, r, "INFO  d.t.p.c.c.ConvertPatchesCommand - Start to convert our patches to git patches")
-	expectLogLine(t, r, "ERROR d.t.patches.internal.git.GitService - No patches to convert found")
+	expectLogLine(t, r, "INFO  d.t.patches.internal.git.GitService - No patches to convert found")
 
 	textChanges(t, f.workdir())
 	f.commitInWorkdir(t, "Subject", "Body")
@@ -508,22 +534,17 @@ func TestResetToRefs(t *testing.T) {
 }
 
 func TestResetErrors(t *testing.T) {
-	dir := t.TempDir()
-	r := run(t, dir, "", "reset")
-	expectCode(t, r, 8)
-	expectLogLine(t, r, "ERROR d.t.patches.cli.command.ResetCommand - Unable to reset repository. No config file found")
-
 	f := newFixture(t)
 	f.writeConfig(t, "main")
-	r = run(t, f.Project, "", "reset")
+	r := run(t, f.Project, "", "reset")
 	expectCode(t, r, 8)
 	expectLogLine(t, r, "ERROR d.t.patches.internal.git.GitService - No git directory found to reset!")
 
 	expectCode(t, run(t, f.Project, "", "init"), 0)
 	expectCode(t, run(t, f.Project, "", "config", "-BRF", "unknown-ref"), 0)
 	r = run(t, f.Project, "", "reset")
-	expectCode(t, r, 42)
-	expectLogLine(t, r, "ERROR d.t.patches.internal.git.GitService - Could not found commit id for base ref")
+	expectCode(t, r, 8)
+	expectLogLine(t, r, `ERROR d.t.patches.internal.git.GitService - Could not find the base ref "unknown-ref" in the repository`)
 
 	expectCode(t, run(t, f.Project, "", "config", "-BRF", "0123456789012345678901234567890123456789"), 0)
 	r = run(t, f.Project, "", "reset")
@@ -542,29 +563,21 @@ func TestResetErrors(t *testing.T) {
 }
 
 func TestClean(t *testing.T) {
-	dir := t.TempDir()
-	r := run(t, dir, "", "clean")
-	expectCode(t, r, 42)
-
 	f := newFixture(t)
 	f.writeConfig(t, "main")
-	r = run(t, f.Project, "", "clean")
-	expectCode(t, r, 1)
-	expectLogLine(t, r, "INFO  d.t.patches.cli.command.CleanCommand - Deleting _workdir directory")
-	expectLogLine(t, r, "ERROR d.t.p.internal.file.FileService - Git repo dir specified in config is not a directory or does not exist?")
+	r := run(t, f.Project, "", "clean")
+	expectCode(t, r, 8)
+	expectLogLine(t, r, "ERROR d.t.patches.cli.command.CleanCommand - No work directory found, nothing to clean")
 
 	expectCode(t, run(t, f.Project, "", "init"), 0)
 	writeFile(t, filepath.Join(f.workdir(), "build", "ignored"), "x", 0o644)
 	r = run(t, f.Project, "", "clean")
 	expectCode(t, r, 0)
+	expectLogLine(t, r, "INFO  d.t.patches.cli.command.CleanCommand - Deleting the work directory _workdir")
 	if exists(f.workdir()) {
 		t.Fatal("_workdir still exists")
 	}
-	if !exists(filepath.Join(f.Project, configName())) || !exists(filepath.Join(f.Project, "patches")) {
+	if !exists(filepath.Join(f.Project, configName)) || !exists(filepath.Join(f.Project, "patches")) {
 		t.Fatal("clean removed too much")
 	}
-
-	// invalid config -> NullPointerException -> exit 1
-	writeFile(t, filepath.Join(f.Project, configName()), "", 0o644)
-	expectCode(t, run(t, f.Project, "", "clean"), 1)
 }

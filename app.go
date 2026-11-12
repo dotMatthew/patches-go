@@ -12,9 +12,9 @@ import (
 // Exit codes.
 const (
 	exitOK       = 0
-	exitCrash    = 1 // errors the Java version did not handle (and some I/O errors)
-	exitUsage    = 8
-	exitInternal = 42
+	exitIO       = 1  // file system and other I/O errors, unexpected errors
+	exitUsage    = 8  // wrong usage: missing/invalid config or input, unclean repository
+	exitInternal = 42 // git errors and other internal errors
 )
 
 // app holds everything a command needs from its environment, so commands
@@ -24,7 +24,7 @@ type app struct {
 	dir    string // project directory; relative paths are resolved against it
 	stdin  io.Reader
 	stdout io.Writer // log output
-	stderr io.Writer // unhandled errors
+	stderr io.Writer // usage errors of the command line parser
 }
 
 // path resolves p against the project directory.
@@ -75,13 +75,11 @@ func (a *app) log(level string, l logger, cause error, format string, args ...an
 	_, _ = io.WriteString(a.stdout, line)
 }
 
-// cmdError ends a command with an exit code. If logger is set, it is reported
-// as an ERROR log line; otherwise it is an error the Java version did not
-// handle, which is printed to stderr.
+// cmdError ends a command: it is logged as ERROR line and determines the
+// exit code.
 type cmdError struct {
 	code   int
 	logger logger
-	level  string // log level, "ERROR" if empty
 	msg    string
 	cause  error
 }
@@ -100,28 +98,16 @@ func failure(code int, l logger, cause error, format string, args ...any) error 
 	return &cmdError{code: code, logger: l, msg: fmt.Sprintf(format, args...), cause: cause}
 }
 
-// crash returns an error the Java version did not handle (exit code 1).
-func crash(format string, args ...any) error {
-	return &cmdError{code: exitCrash, msg: fmt.Sprintf(format, args...)}
-}
-
-// report prints err and returns its exit code (0 for nil).
+// report logs err and returns its exit code (0 for nil). Errors that are not
+// a cmdError are unexpected and exit with code 1.
 func (a *app) report(err error) int {
 	if err == nil {
 		return exitOK
 	}
 	var e *cmdError
 	if !errors.As(err, &e) {
-		e = &cmdError{code: exitCrash, msg: err.Error()}
+		e = &cmdError{code: exitIO, logger: logCLI, msg: "Unexpected error", cause: err}
 	}
-	if e.logger == "" {
-		fmt.Fprintln(a.stderr, "Exception: "+e.Error())
-	} else {
-		level := e.level
-		if level == "" {
-			level = "ERROR"
-		}
-		a.log(level, e.logger, e.cause, "%s", e.msg)
-	}
+	a.log("ERROR", e.logger, e.cause, "%s", e.msg)
 	return e.code
 }
