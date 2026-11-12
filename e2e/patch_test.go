@@ -560,11 +560,11 @@ func TestClean(t *testing.T) {
 	if exists(f.workdir()) {
 		t.Fatal("_workdir still exists")
 	}
-	if !exists(filepath.Join(f.Project, "patches.properties")) || !exists(filepath.Join(f.Project, "patches")) {
+	if !exists(filepath.Join(f.Project, configName())) || !exists(filepath.Join(f.Project, "patches")) {
 		t.Fatal("clean removed too much")
 	}
 
 	// invalid config -> NullPointerException -> exit 1
-	writeFile(t, filepath.Join(f.Project, "patches.properties"), "", 0o644)
+	writeFile(t, filepath.Join(f.Project, configName()), "", 0o644)
 	expectCode(t, run(t, f.Project, "", "clean"), 1)
 }

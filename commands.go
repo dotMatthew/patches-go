@@ -67,8 +67,11 @@ func (a *app) run(args []string) int {
 	return app.Execute(args)
 }
 
-// configFile returns the config file selected with -F.
-func (a *app) configFile(v cli.Values) string { return a.path(v.Get(optConfig, defaultConfigFile)) }
+// configFile returns the config file selected with -F (default
+// patches.toml); an old patches.properties is migrated to TOML first.
+func (a *app) configFile(v cli.Values) string {
+	return a.resolveConfigFile(a.path(v.Get(optConfig, defaultConfigFile)))
+}
 
 func (a *app) runInit(v cli.Values) error {
 	file := a.configFile(v)
@@ -81,9 +84,9 @@ func (a *app) runInit(v cli.Values) error {
 			c = nil
 		}
 	} else {
-		// The example is always written to patches.properties, even with -F.
-		c = &config{URL: v.Get(optURL, exampleURL), Ref: "main", PatchesDir: "patches"}
-		if err := c.save(a.path(defaultConfigFile)); err != nil {
+		// The example is written to the -F file (as TOML), default patches.toml.
+		c = &config{URL: v.Get(optURL, exampleURL), Ref: "main", PatchesDir: defaultPatchesDir}
+		if err := c.save(file); err != nil {
 			a.logErr(logProps, err, "Failed to write example patches config file to disk")
 			c = nil
 		}
@@ -215,7 +218,7 @@ func (a *app) runConfig(v cli.Values) error {
 		c.PatchesDir = s
 	}
 	a.info(logConfig, "Saving configuration changes to disk")
-	if err := c.save(file); err != nil {
+	if err := c.save(tomlFile(file)); err != nil {
 		return failure(exitCrash, logProps, err, "Failed to save patches configuration file to disk")
 	}
 	return nil

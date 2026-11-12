@@ -1,24 +1,30 @@
 package main
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"os"
-	"runtime"
-	"strconv"
+	"path/filepath"
 	"strings"
-	"time"
-	"unicode/utf16"
+
+	"github.com/BurntSushi/toml"
 )
 
 const (
-	defaultConfigFile = "patches.properties"
+	defaultConfigFile = "patches.toml"
 	exampleURL        = "no://op"
+	defaultPatchesDir = "patches"
 )
 
-// config is the content of patches.properties.
+// config is the content of patches.toml:
+//
+//	base_repo_url = "https://github.com/example/repo.git"
+//	base_repo_ref = "main"
+//	patches_directory = "patches"
 type config struct {
-	URL, Ref, PatchesDir string
+	URL        string `toml:"base_repo_url"`
+	Ref        string `toml:"base_repo_ref"`
+	PatchesDir string `toml:"patches_directory,omitempty"`
 }
 
 func exists(path string) bool {
@@ -26,172 +32,101 @@ func exists(path string) bool {
 	return path != "" && err == nil
 }
 
-// loadConfig reads the config file. The error describes why it is invalid
+// loadConfig reads a config file: TOML, or the old properties format if the
+// file name ends with ".properties". The error describes why it is invalid
 // (callers report it and decide how to go on).
 func loadConfig(file string) (*config, error) {
 	data, err := os.ReadFile(file)
-	var p map[string]string
+	if err != nil {
+		return nil, failure(exitCrash, logProps, err, "Failed to load patches configuration")
+	}
+	if isPropertiesFile(file) {
+		return readPropertiesConfig(data)
+	}
+	var c config
+	meta, err := toml.Decode(string(data), &c)
 	if err == nil {
-		p, err = parseProperties(data)
+		if unknown := meta.Undecoded(); len(unknown) > 0 {
+			err = fmt.Errorf("unknown keys: %v", unknown)
+		}
 	}
 	if err != nil {
 		return nil, failure(exitCrash, logProps, err, "Failed to load patches configuration")
 	}
-	if len(p) == 0 {
-		return nil, failure(exitCrash, logProps, nil, "Could not load properties file")
+	if !meta.IsDefined("base_repo_url") || !meta.IsDefined("base_repo_ref") {
+		return nil, &cmdError{code: exitCrash, logger: logProps, level: "INFO", msg: "Keys cannot be loaded from config file!"}
 	}
-	url, okURL := p["baseRepoUrl"]
-	ref, okRef := p["baseRepoRef"]
-	dir, okDir := p["patchesDirectoryPath"]
-	if !okDir {
-		dir = "patches"
+	if c.PatchesDir == "" {
+		c.PatchesDir = defaultPatchesDir
 	}
-	if !okURL || !okRef {
-		return nil, &cmdError{code: exitCrash, logger: logProps, level: "INFO", msg: "Keys cannot be loaded from properties file!"}
-	}
-	return &config{URL: url, Ref: ref, PatchesDir: dir}, nil
+	return &c, nil
 }
 
-// save writes the config in java.util.Properties format.
+// save writes the config as TOML.
 func (c *config) save(file string) error {
-	nl := "\n"
-	if runtime.GOOS == "windows" {
-		nl = "\r\n"
+	var buf bytes.Buffer
+	buf.WriteString("# patches configuration\n")
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
+		return err
 	}
-	content := "#" + time.Now().Format("Mon Jan 02 15:04:05 MST 2006") + nl +
-		"baseRepoRef=" + escapeProperty(c.Ref) + nl +
-		"baseRepoUrl=" + escapeProperty(c.URL) + nl +
-		"patchesDirectoryPath=" + escapeProperty(c.PatchesDir) + nl
-	return os.WriteFile(file, []byte(content), 0o644)
+	return os.WriteFile(file, buf.Bytes(), 0o644)
 }
 
-func escapeProperty(s string) string {
-	var sb strings.Builder
-	for i, c := range utf16.Encode([]rune(s)) {
-		switch {
-		case c == ' ' && i == 0:
-			sb.WriteString(`\ `)
-		case c == '\\':
-			sb.WriteString(`\\`)
-		case c == '\t':
-			sb.WriteString(`\t`)
-		case c == '\n':
-			sb.WriteString(`\n`)
-		case c == '\r':
-			sb.WriteString(`\r`)
-		case c == '\f':
-			sb.WriteString(`\f`)
-		case strings.ContainsRune("=:#!", rune(c)):
-			sb.WriteString(`\` + string(rune(c)))
-		case c < 0x20 || c > 0x7e:
-			fmt.Fprintf(&sb, `\u%04X`, c)
-		default:
-			sb.WriteByte(byte(c))
-		}
+func isPropertiesFile(file string) bool { return strings.HasSuffix(file, ".properties") }
+
+// tomlFile returns the TOML file that belongs to a config file name
+// ("x.properties" -> "x.toml").
+func tomlFile(file string) string {
+	if isPropertiesFile(file) {
+		return strings.TrimSuffix(file, ".properties") + ".toml"
 	}
-	return sb.String()
+	return file
 }
 
-// parseProperties implements the java.util.Properties file format
-// (ISO-8859-1, comments, line continuations, escapes, "=", ":" or blank as
-// separator).
-func parseProperties(data []byte) (map[string]string, error) {
-	isBlank := func(c uint16) bool { return c == ' ' || c == '\t' || c == '\f' }
-	var logical [][]uint16
-	var cur []uint16
-	continuing := false
-	for _, natural := range strings.FieldsFunc(strings.ReplaceAll(string(data), "\r\n", "\n"), func(r rune) bool { return r == '\n' || r == '\r' }) {
-		line := make([]uint16, 0, len(natural))
-		for i := 0; i < len(natural); i++ {
-			line = append(line, uint16(natural[i])) // ISO-8859-1: one byte = one char
-		}
-		for len(line) > 0 && isBlank(line[0]) {
-			line = line[1:]
-		}
-		if !continuing && (len(line) == 0 || line[0] == '#' || line[0] == '!') {
-			continue
-		}
-		backslashes := 0
-		for i := len(line) - 1; i >= 0 && line[i] == '\\'; i-- {
-			backslashes++
-		}
-		continuing = backslashes%2 == 1
-		if continuing {
-			line = line[:len(line)-1]
-		}
-		cur = append(cur, line...)
-		if !continuing {
-			logical = append(logical, cur)
-			cur = nil
-		}
+// resolveConfigFile returns the config file to use for the -F value file.
+// An old ".properties" config (given with -F or found next to a missing
+// ".toml" config) is migrated to TOML. If it cannot be migrated because it is
+// invalid, its path is returned so the caller reports why, as before.
+func (a *app) resolveConfigFile(file string) string {
+	target := tomlFile(file)
+	if exists(target) {
+		return target
 	}
-	if continuing {
-		logical = append(logical, cur)
+	old := file
+	if !isPropertiesFile(old) {
+		old = strings.TrimSuffix(file, ".toml") + ".properties"
 	}
-
-	result := map[string]string{}
-	for _, line := range logical {
-		keyEnd, valueStart, hasSep, escaped := len(line), len(line), false, false
-		for i, c := range line {
-			if !escaped && (c == '=' || c == ':' || isBlank(c)) {
-				keyEnd, valueStart, hasSep = i, i+1, c != ' ' && c != '\t' && c != '\f'
-				break
-			}
-			escaped = c == '\\' && !escaped
-		}
-		for valueStart < len(line) {
-			c := line[valueStart]
-			if !isBlank(c) && (hasSep || (c != '=' && c != ':')) {
-				break
-			}
-			hasSep = hasSep || !isBlank(c)
-			valueStart++
-		}
-		key, err := unescapeProperty(line[:keyEnd])
-		if err != nil {
-			return nil, err
-		}
-		value, err := unescapeProperty(line[valueStart:])
-		if err != nil {
-			return nil, err
-		}
-		result[key] = value
+	if !isPropertiesFile(old) || !exists(old) {
+		return target
 	}
-	return result, nil
+	if err := a.migrateConfig(old, target); err != nil {
+		return old
+	}
+	return target
 }
 
-func unescapeProperty(in []uint16) (string, error) {
-	var out []uint16
-	for i := 0; i < len(in); i++ {
-		if in[i] != '\\' {
-			out = append(out, in[i])
-			continue
-		}
-		if i++; i == len(in) {
-			break
-		}
-		switch c := in[i]; c {
-		case 'u':
-			if i+5 > len(in) {
-				return "", errors.New("malformed \\uxxxx encoding")
-			}
-			v, err := strconv.ParseUint(string(utf16.Decode(in[i+1:i+5])), 16, 16)
-			if err != nil {
-				return "", errors.New("malformed \\uxxxx encoding")
-			}
-			out = append(out, uint16(v))
-			i += 4
-		case 't':
-			out = append(out, '\t')
-		case 'r':
-			out = append(out, '\r')
-		case 'n':
-			out = append(out, '\n')
-		case 'f':
-			out = append(out, '\f')
-		default:
-			out = append(out, c)
-		}
+// migrateConfig converts the properties file old to the TOML file target
+// and renames old to "<old>.bak".
+func (a *app) migrateConfig(old, target string) error {
+	c, err := loadConfig(old)
+	if err != nil {
+		return err // reported when the caller loads the old file
 	}
-	return string(utf16.Decode(out)), nil
+	if err := c.save(target); err != nil {
+		a.logErr(logProps, err, "Unable to migrate %s to %s", old, target)
+		return err
+	}
+	if err := os.Rename(old, old+".bak"); err != nil {
+		a.logErr(logProps, err, "Unable to rename %s to %s.bak", old, old)
+	}
+	a.info(logProps, "Migrated %s to %s (the old file was renamed to %s.bak)", a.rel(old), a.rel(target), a.rel(old))
+	return nil
+}
+
+// rel returns p relative to the project directory (for log messages).
+func (a *app) rel(p string) string {
+	if r, err := filepath.Rel(a.dir, p); err == nil && !strings.HasPrefix(r, "..") {
+		return r
+	}
+	return p
 }

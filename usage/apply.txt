@@ -1,4 +1,4 @@
 Usage: patches apply [-F=<configFile>]
 Applies the patches to the base repository
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml

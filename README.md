@@ -2,8 +2,9 @@
 
 Go-Version von [dotMatthew/patches](https://github.com/dotMatthew/patches) (Java/JGit/picocli).
 Keine Struktur-Kopie, aber dieselbe Ausgabe: gleiche Kommandos, Optionen, Hilfetexte,
-Fehlermeldungen, Log-Ausgaben, Exit-Codes, `patches.properties`-Format und byte-identische
-Patch-Dateien – abgesichert durch die Black-Box-Testsuite in `e2e/`.
+Fehlermeldungen, Log-Ausgaben, Exit-Codes und byte-identische Patch-Dateien – abgesichert
+durch die Black-Box-Testsuite in `e2e/`. Einzige gewollte Abweichung im Verhalten: die
+Konfiguration ist TOML statt `.properties` (siehe [Konfiguration](#konfiguration)).
 
 ```
 patches init | apply | clean | create-patch | config | reset | convert-patches
@@ -16,7 +17,8 @@ patches init | apply | clean | create-patch | config | reset | convert-patches
 | `main.go`               | Einstieg: Signal-Handling (Ctrl+C), Exit-Code                     |
 | `app.go`                | `app` (Verzeichnis, Ein-/Ausgaben, Context), Logging, `cmdError`  |
 | `commands.go`, `usage/` | die sieben Kommandos und ihre Hilfetexte (per `go:embed`)         |
-| `config.go`             | `patches.properties` (java.util.Properties-Format)                |
+| `config.go`             | `patches.toml` lesen/schreiben, Migration von `.properties`       |
+| `properties.go`         | Lesen des alten `patches.properties`-Formats (nur für die Migration) |
 | `patchfile.go`          | Patch-Datei: Mail-Header (From/Date/Subject), Body, Diff          |
 | `git.go`                | clone, reset (clean + hard reset)                                 |
 | `create.go`, `apply.go` | create-patch, apply, convert-patches                              |
@@ -32,6 +34,36 @@ dadurch lassen sich die Kommandos auch im Prozess testen.
 
 Git-Zugriffe laufen über go-git. Reines Go ohne cgo – die Binaries sind statisch und laufen
 auf amd64 und arm64.
+
+## Konfiguration
+
+Die Konfiguration liegt in `patches.toml` (andere Datei mit `-F`):
+
+```toml
+# patches configuration
+base_repo_url = "https://github.com/example/repo.git"
+base_repo_ref = "main"            # Branch, Tag, Ref-Name oder Commit-SHA
+patches_directory = "patches"     # optional, Standard: patches
+```
+
+`patches init` legt die Datei an (bei `-F` an diesem Ort, bei `-F name.properties` als
+`name.toml`), `patches config` ändert sie (die Datei wird dabei neu
+geschrieben, eigene Kommentare gehen verloren). Unbekannte Schlüssel sind ein Fehler
+(Tippfehlerschutz).
+
+**Migration von `patches.properties`:** Die Java-Version (und Go-Versionen < 2.0.0) nutzen
+`patches.properties`. Dieses Format wird nur noch gelesen: Gibt es keine `patches.toml`, aber
+eine `patches.properties`, migriert jedes Kommando sie automatisch – es schreibt
+`patches.toml` und benennt die alte Datei in `patches.properties.bak` um. Mit
+`-F name.properties` wird entsprechend nach `name.toml` migriert, danach wird die TOML-Datei
+verwendet. Eine ungültige `.properties`-Datei wird nicht migriert; es erscheinen dieselben
+Fehlermeldungen wie bisher.
+
+| `.properties`          | `.toml`             |
+|------------------------|---------------------|
+| `baseRepoUrl`          | `base_repo_url`     |
+| `baseRepoRef`          | `base_repo_ref`     |
+| `patchesDirectoryPath` | `patches_directory` |
 
 ## Installation
 
@@ -77,11 +109,14 @@ ein erzeugter Diff angewendet immer exakt den Zieltext ergibt (`make fuzz`). Die
 Implementierung, z. B. die originale Java-Version:
 
 ```
-PATCHES_CMD="java -jar /pfad/zu/patches.jar" PATCHES_VERSION=1.0.0 go test -count=1 ./e2e
+PATCHES_CMD="java -jar /pfad/zu/patches.jar" PATCHES_VERSION=1.0.0 PATCHES_JAVA=1 go test -count=1 ./e2e
 ```
 
 `PATCHES_VERSION` ist die Version, die `-V` ausgeben muss; ohne die Variable wird nur das
 Format geprüft. Das von den Tests selbst gebaute Binary bekommt die Version `0.0.0-e2e`.
+`PATCHES_JAVA=1` kennzeichnet die Java-Version: Die Tests schreiben dann `patches.properties`
+statt `patches.toml`, und die Tests für das TOML-Format und die Migration (markiert mit
+`goOnly`) werden übersprungen.
 
 Die Referenzdateien in `e2e/testdata/` stammen aus der Java-Version und können mit
 `UPDATE_GOLDEN=1` neu erzeugt werden.
@@ -98,6 +133,13 @@ Token ist nicht nötig. Commits wie `docs:`, `test:`, `ci:` oder `build:` lösen
 
 ## Bewusste Abweichungen von der Java-Version
 
+* **Konfigurationsformat (Breaking Change ab 2.0.0):** `patches.toml` mit den Schlüsseln
+  `base_repo_url`, `base_repo_ref` und `patches_directory` statt `patches.properties`.
+  `patches.properties` wird nur noch gelesen und automatisch migriert (siehe
+  [Konfiguration](#konfiguration)). Die Hilfetexte nennen entsprechend `patches.toml`, und
+  Meldungen zur TOML-Datei sprechen von „config file“ statt „properties file“.
+* `init -F datei` legt die Beispiel-Konfiguration in der angegebenen Datei an; die
+  Java-Version schreibt sie unabhängig von `-F` immer nach `patches.properties`.
 * `clean` folgt beim rekursiven Löschen keinen Symlinks (Java/`File.isDirectory` tut das und
   kann so Dateien außerhalb von `_workdir` löschen).
 * Nach einem fehlgeschlagenen `apply` bleibt kein `.git/index.lock` liegen (JGit-Bug, der

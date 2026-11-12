@@ -5,7 +5,7 @@
 // expected to print):
 //
 //	go test ./e2e
-//	PATCHES_CMD="java -jar /path/to/patches.jar" PATCHES_VERSION=1.0.0 go test ./e2e
+//	PATCHES_CMD="java -jar /path/to/patches.jar" PATCHES_VERSION=1.0.0 PATCHES_JAVA=1 go test ./e2e
 //
 // Golden files in testdata/ can be (re)generated with UPDATE_GOLDEN=1.
 package e2e
@@ -24,6 +24,38 @@ import (
 )
 
 var patchesCmd []string
+
+// javaImpl is set when the original Java version is tested. It uses
+// patches.properties, the Go version patches.toml (with migration).
+var javaImpl = os.Getenv("PATCHES_JAVA") == "1"
+
+// configName is the default config file of the tested implementation.
+func configName() string {
+	if javaImpl {
+		return "patches.properties"
+	}
+	return "patches.toml"
+}
+
+// goOnly skips tests of behavior that deliberately differs from the Java version.
+func goOnly(t *testing.T) {
+	t.Helper()
+	if javaImpl {
+		t.Skip("Go only: the Go version uses TOML config files")
+	}
+}
+
+// forImpl adapts a help text of the Java version to the tested implementation.
+func forImpl(javaText string) string {
+	if javaImpl {
+		return javaText
+	}
+	return strings.NewReplacer(
+		"Defaults to patches.\n                           properties", "Defaults to patches.toml",
+		"Defaults to patches.properties", "Defaults to patches.toml",
+		"specified in patches.properties, but", "specified in patches.toml, but",
+	).Replace(javaText)
+}
 
 // testVersion is compiled into the binary built by the tests.
 const testVersion = "0.0.0-e2e"
@@ -253,8 +285,19 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) workdir() string { return filepath.Join(f.Project, "_workdir") }
 
-// writeConfig writes patches.properties in the project directory.
+// writeConfig writes the config file in the project directory.
 func (f *fixture) writeConfig(t *testing.T, ref string) {
+	t.Helper()
+	if !javaImpl {
+		writeFile(t, filepath.Join(f.Project, "patches.toml"), fmt.Sprintf(
+			"base_repo_url = %q\nbase_repo_ref = %q\npatches_directory = \"patches\"\n", f.Base, ref), 0o644)
+		return
+	}
+	f.writePropertiesConfig(t, ref)
+}
+
+// writePropertiesConfig writes patches.properties (the Java config format).
+func (f *fixture) writePropertiesConfig(t *testing.T, ref string) {
 	t.Helper()
 	// The Java Properties format needs ':' and '\' escaped.
 	url := strings.NewReplacer(`\`, `\\`, ":", `\:`).Replace(f.Base)

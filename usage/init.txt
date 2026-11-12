@@ -1,7 +1,6 @@
 Usage: patches init [-F=<configFile>] [-U=<url>]
 Create a new patches file if not existing and downloads the base repository as
-specified in patches.properties, but does not apply any patches.
+specified in patches.toml, but does not apply any patches.
   -F, --config=<configFile>
-                         Path to patches config file. Defaults to patches.
-                           properties
+                         Path to patches config file. Defaults to patches.toml
   -U, --repo-url=<url>   URL of the Base Repo

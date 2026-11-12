@@ -6,6 +6,6 @@ Changes a value in the current patches config file
       -BRU, --base-repo-url=<baseRepoUrl>
          Set the base repository url
   -F, --config=<configFile>
-         Path to patches config file. Defaults to patches.properties
+         Path to patches config file. Defaults to patches.toml
       -PDP, --patches-directory-path=<patchesDirectoryPath>
          Set the path to the patches directory

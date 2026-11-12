@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const rootUsage = `Usage: patches [-hV] [COMMAND]
+var rootUsage = forImpl(`Usage: patches [-hV] [COMMAND]
 A command line tool for managing Git patches
   -h, --help      Show this help message and exit.
   -V, --version   Print version information and exit.
@@ -20,18 +20,18 @@ Commands:
   reset            Resets the workdir repository to the config base ref and the
                      remote head state
   convert-patches  Convert our patch format to git patches
-`
+`)
 
-const initUsage = `Usage: patches init [-F=<configFile>] [-U=<url>]
+var initUsage = forImpl(`Usage: patches init [-F=<configFile>] [-U=<url>]
 Create a new patches file if not existing and downloads the base repository as
 specified in patches.properties, but does not apply any patches.
   -F, --config=<configFile>
                          Path to patches config file. Defaults to patches.
                            properties
   -U, --repo-url=<url>   URL of the Base Repo
-`
+`)
 
-const configUsage = `Usage: patches config [-BRF=<baseRepoRef>] [-BRU=<baseRepoUrl>]
+var configUsage = forImpl(`Usage: patches config [-BRF=<baseRepoRef>] [-BRU=<baseRepoUrl>]
                       [-F=<configFile>] [-PDP=<patchesDirectoryPath>]
 Changes a value in the current patches config file
       -BRF, --base-repo-ref=<baseRepoRef>
@@ -42,7 +42,7 @@ Changes a value in the current patches config file
          Path to patches config file. Defaults to patches.properties
       -PDP, --patches-directory-path=<patchesDirectoryPath>
          Set the path to the patches directory
-`
+`)
 
 func TestHelpAndVersion(t *testing.T) {
 	dir := t.TempDir()
@@ -153,7 +153,7 @@ Convert our patch format to git patches
 	for cmd, usage := range usages {
 		r := run(t, dir, "", cmd, "--x")
 		expectCode(t, r, 2)
-		if want := "Unknown option: '--x'\n" + usage; r.Stderr != want {
+		if want := "Unknown option: '--x'\n" + forImpl(usage); r.Stderr != want {
 			t.Errorf("%s: stderr\n%s\nwant\n%s", cmd, r.Stderr, want)
 		}
 	}
