@@ -1,0 +1,16 @@
+version: "2"
+
+linters:
+  # standard set: errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - errorlint # errors.Is/As instead of == and type assertions
+    - misspell
+    - unconvert
+  exclusions:
+    presets:
+      - std-error-handling # e.g. unchecked Close of read-only files, fmt.Fprint
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

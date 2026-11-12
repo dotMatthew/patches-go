@@ -6,7 +6,7 @@ GOFLAGS   := -trimpath
 VERSION   ?=
 LDFLAGS   := -s -w $(if $(VERSION),-X main.version=$(VERSION))
 
-.PHONY: build dist checksums test test-arm64 vet clean
+.PHONY: build dist checksums test fuzz lint test-arm64 vet clean
 
 # Binary for the current platform.
 build:
@@ -30,9 +30,19 @@ checksums: dist
 vet:
 	go vet ./...
 
-# Black box tests (needs git); builds the binary itself.
+# Unit tests and black box tests (needs git); builds the binary itself.
 test: vet
 	go test -count=1 ./...
+
+# Fuzz the diff algorithms and the diff/apply round trip (FUZZTIME=1m).
+FUZZTIME ?= 30s
+fuzz:
+	go test ./internal/diff -run '^$$' -fuzz FuzzDiff -fuzztime $(FUZZTIME)
+	go test ./internal/patch -run '^$$' -fuzz FuzzRoundTrip -fuzztime $(FUZZTIME)
+
+# Needs golangci-lint v2 (https://golangci-lint.run), configured in .golangci.yml.
+lint:
+	golangci-lint run
 
 # Runs the tests against the linux/arm64 binary under qemu inside Docker.
 test-arm64: dist

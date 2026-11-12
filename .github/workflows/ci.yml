@@ -26,11 +26,22 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-
       - name: Vet and test
         run: make test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15
 
   build:
     name: Build binaries
@@ -54,7 +65,7 @@ jobs:
 
   release:
     name: Release
-    needs: test
+    needs: [test, lint]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
