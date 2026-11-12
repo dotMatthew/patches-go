@@ -32,7 +32,7 @@ func Apply(root, text string) ([]string, error) {
 			err = applyFile(path(f.OldPath), f)
 		case Delete:
 			if os.Remove(path(f.OldPath)) != nil {
-				err = fmt.Errorf("Cannot delete file %s", path(f.OldPath))
+				err = fmt.Errorf("cannot delete file %s", path(f.OldPath))
 			}
 		case Rename, Copy:
 			src, dest := path(f.OldPath), path(f.NewPath)
@@ -63,7 +63,7 @@ func createEmpty(p string) error {
 	}
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o666)
 	if err != nil {
-		return fmt.Errorf("Creating new file %s failed: %w", p, err)
+		return fmt.Errorf("cannot create new file %s: %w", p, err)
 	}
 	return f.Close()
 }
@@ -88,7 +88,7 @@ func applyFile(p string, f *File) error {
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return fmt.Errorf("Cannot apply: %w", err)
+		return fmt.Errorf("cannot apply: %w", err)
 	}
 	// A CRLF file patched with a LF patch is converted to LF and back.
 	crlf := !hunksHaveCRLF(f) && diff.IsCrLfText(data)
@@ -103,7 +103,7 @@ func applyFile(p string, f *File) error {
 		out = toCRLF(out)
 	}
 	// The file is replaced (never written through a symlink).
-	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	// new files get their permissions from the umask, like in JGit
@@ -135,7 +135,7 @@ func applyHunks(rt *diff.RawText, hunks []*Hunk) ([]byte, error) {
 	lastWasRemoval, noNewlineAtEnd := false, false
 	for _, h := range hunks {
 		if h.NewStart <= lastNewStart {
-			return nil, fmt.Errorf("Cannot apply: %s", h)
+			return nil, fmt.Errorf("cannot apply %s", h)
 		}
 		lastNewStart = h.NewStart
 		if h.NewStart == 0 { // must be the single hunk clearing the file
@@ -143,11 +143,11 @@ func applyHunks(rt *diff.RawText, hunks []*Hunk) ([]byte, error) {
 				lines = nil
 				break
 			}
-			return nil, fmt.Errorf("Cannot apply: %s", h)
+			return nil, fmt.Errorf("cannot apply %s", h)
 		}
 		at, ok := findPosition(h, lines, h.NewStart-1, &shift, afterLastHunk)
 		if !ok {
-			return nil, fmt.Errorf("Cannot apply: %s", h)
+			return nil, fmt.Errorf("cannot apply %s", h)
 		}
 		shift = at - h.NewStart + 1
 		for _, l := range h.Lines {

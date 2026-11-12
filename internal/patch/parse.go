@@ -53,7 +53,7 @@ func Parse(text string) ([]*File, error) {
 		l := lines[i]
 		switch {
 		case isHunkHeader(l):
-			errs = append(errs, "Hunk disconnected from file")
+			errs = append(errs, "hunk disconnected from file")
 			i++
 		case strings.HasPrefix(l, "diff --git "):
 			if i == len(lines)-1 {
@@ -66,14 +66,14 @@ func Parse(text string) ([]*File, error) {
 			i = f.parseHunks(lines, i, &errs)
 			files = append(files, f)
 		case strings.HasPrefix(l, "diff --cc "), strings.HasPrefix(l, "diff --combined "):
-			errs = append(errs, "Combined diffs are not supported")
+			errs = append(errs, "combined diffs are not supported")
 			i++
 		default:
 			i++
 		}
 	}
 	if len(errs) > 0 {
-		return nil, fmt.Errorf("Format error: %s", strings.Join(errs, "; "))
+		return nil, fmt.Errorf("invalid patch: %s", strings.Join(errs, "; "))
 	}
 	return files, nil
 }
@@ -209,14 +209,14 @@ func (f *File) parseHunks(lines []string, i int, errs *[]string) int {
 			f.Hunks = append(f.Hunks, h)
 			if i = next; i < len(lines) {
 				if t := lines[i]; !strings.HasPrefix(t, "@") && !strings.HasPrefix(t, "d") && t != "-- " {
-					*errs = append(*errs, "Unexpected hunk trailer")
+					*errs = append(*errs, "unexpected hunk trailer")
 				}
 			}
 			continue
 		}
 		if len(f.Hunks) == 0 {
 			if strings.HasPrefix(l, "GIT binary patch") {
-				*errs = append(*errs, "GIT binary patches are not supported")
+				*errs = append(*errs, "GIT binary patches are not supported ("+f.NewPath+")")
 				for i++; i < len(lines) && !strings.HasPrefix(lines[i], "diff --git "); i++ {
 				}
 				return i
@@ -272,11 +272,11 @@ func parseHunk(lines []string, i int) (*Hunk, int, error) {
 		h.Deleted--
 		end--
 	case h.Context+h.Deleted < h.OldCount:
-		err = fmt.Errorf("Truncated hunk, at least %d old lines is missing", h.OldCount-h.Context-h.Deleted)
+		err = fmt.Errorf("truncated hunk, at least %d old lines is missing", h.OldCount-h.Context-h.Deleted)
 	case h.Context+h.Added < h.NewCnt:
-		err = fmt.Errorf("Truncated hunk, at least %d new lines is missing", h.NewCnt-h.Context-h.Added)
+		err = fmt.Errorf("truncated hunk, at least %d new lines is missing", h.NewCnt-h.Context-h.Added)
 	case h.Context+h.Deleted > h.OldCount || h.Context+h.Added > h.NewCnt:
-		err = fmt.Errorf("Hunk header %d:%d does not match body line count of %d:%d",
+		err = fmt.Errorf("hunk header %d:%d does not match body line count of %d:%d",
 			h.OldCount, h.NewCnt, h.Context+h.Deleted, h.Context+h.Added)
 	}
 	h.Lines = lines[start:end]
