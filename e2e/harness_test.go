@@ -12,6 +12,7 @@ package e2e
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -77,7 +78,7 @@ func buildBinary() (string, error) {
 	}
 	out, err := exec.Command("go", "build", "-ldflags=-X main.version="+testVersion, "-o", bin, "..").CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("%v\n%s", err, out)
+		return "", fmt.Errorf("%w\n%s", err, out)
 	}
 	return bin, nil
 }
@@ -115,8 +116,8 @@ func run(t *testing.T, dir, stdin string, args ...string) result {
 	err := cmd.Run()
 	code := 0
 	if err != nil {
-		ee, ok := err.(*exec.ExitError)
-		if !ok {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) {
 			t.Fatalf("running %v: %v", full, err)
 		}
 		code = ee.ExitCode()

@@ -107,11 +107,12 @@ func normalize(e []*Edit, a, b *RawText) []*Edit {
 		if prev != nil {
 			maxA, maxB = prev.BeginA, prev.BeginB
 		}
-		if curType == typeInsert {
+		switch curType {
+		case typeInsert:
 			for cur.EndA < maxA && cur.EndB < maxB && equals(b, cur.BeginB, b, cur.EndB) {
 				cur.shift(1)
 			}
-		} else if curType == typeDelete {
+		case typeDelete:
 			for cur.EndA < maxA && cur.EndB < maxB && equals(a, cur.BeginA, a, cur.EndA) {
 				cur.shift(1)
 			}
