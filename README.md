@@ -3,7 +3,7 @@
 Go-Version von [dotMatthew/patches](https://github.com/dotMatthew/patches) (Java/JGit/picocli).
 Keine Struktur-Kopie, aber dieselbe Ausgabe: gleiche Kommandos, Optionen, Hilfetexte,
 Fehlermeldungen, Log-Ausgaben, Exit-Codes, `patches.properties`-Format und byte-identische
-Patch-Dateien – abgesichert durch die gemeinsame Black-Box-Testsuite in `../e2e`.
+Patch-Dateien – abgesichert durch die Black-Box-Testsuite in `e2e/`.
 
 ```
 patches init | apply | clean | create-patch | config | reset | convert-patches
@@ -20,27 +20,52 @@ patches init | apply | clean | create-patch | config | reset | convert-patches
 | `git.go`               | clone, reset (clean + hard reset)                             |
 | `create.go`, `apply.go`| create-patch, apply, convert-patches                          |
 | `log.go`               | Log-Format und Exit-Codes                                     |
+| `e2e/`                 | Black-Box-Tests (laufen auch gegen die Java-Version)          |
 | `internal/diff`        | Histogram-/Myers-Diff und Diff-Format wie JGit (byte-identische Patches) |
 | `internal/patch`       | Patches parsen und anwenden (Hunk-Suche, CRLF) wie JGit       |
 
 Git-Zugriffe laufen über go-git. Reines Go ohne cgo – die Binaries sind statisch und laufen auf amd64 und arm64.
 
-## Bauen
+## Installation
+
+Voraussetzung: Go ≥ 1.26.
 
 ```
-make build-go   # bin/patches für die aktuelle Plattform
-make dist       # dist/patches-{linux,darwin,windows}-{amd64,arm64}
+go build -o patches .          # Binary im aktuellen Verzeichnis
+go install .                   # nach $GOPATH/bin bzw. $GOBIN
 ```
+
+Ohne Repo-Checkout (sobald das Repo unter diesem Modulpfad veröffentlicht ist):
+
+```
+go install github.com/dotMatthew/patches-go@latest
+```
+
+Für andere Plattformen einfach `GOOS`/`GOARCH` setzen, z. B.
+`CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o patches .`
+
+## Makefile
+
+| Ziel              | Beschreibung                                                   |
+|-------------------|----------------------------------------------------------------|
+| `make build`      | statisches Binary `./patches` für die aktuelle Plattform       |
+| `make dist`       | `dist/patches-{linux,darwin,windows}-{amd64,arm64}`           |
+| `make test`       | `go vet` + Black-Box-Tests (`e2e/`)                            |
+| `make test-arm64` | Tests gegen das linux/arm64-Binary unter qemu in Docker        |
+| `make clean`      | Build-Artefakte löschen                                        |
 
 ## Tests
 
-Die Black-Box-Testsuite in `../e2e` läuft unverändert gegen beide Implementierungen:
+`go test ./...` baut das Binary selbst und führt die Black-Box-Tests in `e2e/` aus
+(benötigt `git` im `PATH`). Dieselben Tests laufen auch gegen jede andere
+Implementierung, z. B. die originale Java-Version:
 
 ```
-make test-java      # PATCHES_CMD="java -jar patches.jar"
-make test-go        # PATCHES_CMD="bin/patches"
-make test-go-arm64  # linux/arm64-Binary unter qemu in Docker
+PATCHES_CMD="java -jar /pfad/zu/patches.jar" go test -count=1 ./e2e
 ```
+
+Die Referenzdateien in `e2e/testdata/` stammen aus der Java-Version und können mit
+`UPDATE_GOLDEN=1` neu erzeugt werden.
 
 ## Bewusste Abweichungen von der Java-Version
 
