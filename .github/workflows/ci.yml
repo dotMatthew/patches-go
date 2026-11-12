@@ -39,3 +39,34 @@ jobs:
           name: patches-binaries
           path: dist/
           if-no-files-found: error
+
+  release:
+    name: Release
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create tags and GitHub releases
+    concurrency: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # semantic-release needs the full history and tags
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          npx --yes
+          -p semantic-release@24
+          -p @semantic-release/exec@6
+          -p @semantic-release/github@11
+          semantic-release

@@ -2,9 +2,11 @@ BINARY    := patches
 DIST      := dist
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 GOFLAGS   := -trimpath
-LDFLAGS   := -s -w
+# VERSION overrides the version from git (e.g. make dist VERSION=1.2.3).
+VERSION   ?=
+LDFLAGS   := -s -w $(if $(VERSION),-X main.version=$(VERSION))
 
-.PHONY: build dist test test-arm64 vet clean
+.PHONY: build dist checksums test test-arm64 vet clean
 
 # Binary for the current platform.
 build:
@@ -12,6 +14,7 @@ build:
 
 # Static binaries for all supported platforms in dist/.
 dist:
+	@rm -rf $(DIST)
 	@mkdir -p $(DIST)
 	@for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; ext=; [ $$os = windows ] && ext=.exe; \
@@ -19,6 +22,10 @@ dist:
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build $(GOFLAGS) -ldflags="$(LDFLAGS)" \
 			-o $(DIST)/$(BINARY)-$$os-$$arch$$ext . || exit 1; \
 	done
+
+# SHA-256 checksums of the binaries in dist/.
+checksums: dist
+	cd $(DIST) && sha256sum $(BINARY)-* > checksums.txt
 
 vet:
 	go vet ./...

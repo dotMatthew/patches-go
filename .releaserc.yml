@@ -1,0 +1,18 @@
+# semantic-release: derives the next version from the conventional commits
+# since the last tag, creates the tag vX.Y.Z and a GitHub release with the
+# binaries. Nothing is committed back to the repository.
+branches:
+  - main
+tagFormat: "v${version}"
+plugins:
+  - "@semantic-release/commit-analyzer"
+  - "@semantic-release/release-notes-generator"
+  - - "@semantic-release/exec"
+    - prepareCmd: "make checksums VERSION=${nextRelease.version}"
+  - - "@semantic-release/github"
+    - assets:
+        - path: "dist/patches-*"
+        - path: "dist/checksums.txt"
+      successComment: false
+      failComment: false
+      releasedLabels: false
